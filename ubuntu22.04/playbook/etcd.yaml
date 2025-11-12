@@ -1,0 +1,31 @@
+- name: 创建etcd
+  hosts: etcd
+  become: true
+  tasks:
+    - name: 分发etcd服务器
+      file:
+        path: /etc/etcd/pki/etcd
+        state: directory
+        owner: root
+        group: root
+        mode: 0644
+    - name: 分发etcd证书
+      copy:
+        src: /tmp/ubuntu/etcd/{{ ansible_ssh_host }}/pki/etcd
+        dest: /etc/etcd/pki
+        owner: root
+        group: root
+        mode: 0644
+    - name: 分发etcd systemd
+      copy:
+        src: /tmp/ubuntu/etcd/{{ ansible_ssh_host }}/etcd.service
+        dest: /etc/systemd/system/etcd.service
+        owner: root
+        group: root
+        mode: 0644
+    - name: 启动etcd
+      systemd:
+        name: etcd
+        state: started
+        daemon_reload: true
+        enabled: true

@@ -1,0 +1,337 @@
+- name: ubuntu-playbook
+  hosts: etcd
+  become: true
+  tasks:
+    - name: 修改主机名
+      hostname:
+        name: "{{ inventory_hostname }}"
+    - name: 添加阿里云源
+      copy:
+        dest: /etc/apt/sources.list
+        content: |
+          deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy main restricted
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted
+          deb http://mirrors.aliyun.com/ubuntu/ jammy universe
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy universe
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-updates universe
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-updates universe
+          deb http://mirrors.aliyun.com/ubuntu/ jammy multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy multiverse
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-updates multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-updates multiverse
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse
+          deb http://mirrors.aliyun.com/ubuntu jammy-security main restricted
+          deb-src http://mirrors.aliyun.com/ubuntu jammy-security main restricted
+          deb http://mirrors.aliyun.com/ubuntu jammy-security universe
+          deb-src http://mirrors.aliyun.com/ubuntu jammy-security universe
+          deb http://mirrors.aliyun.com/ubuntu jammy-security multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu jammy-security multiverse
+        owner: root
+        group: root
+        mode: 0644
+    - name: 更新源
+      apt:
+        update_cache: true
+        cache_valid_time: 0
+        state: present
+    - name: 安装常用工具
+      apt:
+        name:
+          - conntrack
+          - curl
+          - ipvsadm
+          - socat
+          - ebtables
+          - ipset
+          - net-tools
+          - wget
+          - telnet
+          - ntpdate
+          - lrzsz
+          - apt-transport-https
+    - name: 下载kubrnetes源验证key
+      shell: |
+        curl -fsSL https://mirrors.aliyun.com/kubernetes-new/core/stable/{{ version }}/deb/Release.key | gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://mirrors.aliyun.com/kubernetes-new/core/stable/{{ version }}/deb/ /" | tee /etc/apt/sources.list.d/kubernetes.list
+        apt update
+      when: version is defined
+    - name: 安装kubrnetes
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+      when: version is defined
+    - name: 配置ipvs
+      copy:
+        dest: /etc/modules-load.d/ipvs.conf
+        content: |
+          ip_vs
+          ip_vs_rr
+          ip_vs_wrr
+          ip_vs_lc
+          ip_vs_wlc
+          ip_vs_lblc
+          ip_vs_lblcr
+          ip_vs_sh
+          ip_vs_dh
+          ip_vs_sed
+          ip_vs_nq
+          nf_conntrack
+          br_netfilter
+      notify: ipvs_reload
+    - name: 内核优化
+      copy:
+        dest: /etc/sysctl.d/k8s.conf
+        content: |
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+          net.netfilter.nf_conntrack_max = 1048576 
+          net.ipv4.tcp_tw_reuse = 1
+          net.ipv4.tcp_timestamps = 1
+          fs.file-max = 1000000
+          net.ipv4.ip_local_port_range = 32768 65535
+          net.core.somaxconn = 32768
+          net.ipv4.tcp_max_syn_backlog = 8096
+          vm.swappiness = 1 
+          vm.overcommit_memory = 1
+          fs.inotify.max_user_watches = 524288
+      notify: sysctl_reload
+    - name: runc
+      copy:
+        dest: /tmp/runc.amd64
+        src: /tmp/ubuntu/runc.amd64
+        owner: root
+        group: root
+    - name: install runc
+      shell: |
+        install -m 755 /tmp/runc.amd64 /usr/local/sbin/runc
+    - name: cni-plugins-files
+      file:
+        dest: /opt/cni/bin
+        state: directory
+        mode: 0755
+        owner: root
+        group: root
+    - name: scp
+      copy:
+        dest: /opt/cni/bin/{{ item }}
+        src: /tmp/ubuntu/{{ item }}
+        owner: root
+        group: root
+        mode: 0755
+      with_items:
+        - bandwidth
+        - bridge
+        - dhcp
+        - dummy
+        - firewall
+        - host-device
+        - host-local
+        - ipvlan
+        - loopback
+        - macvlan
+        - portmap
+        - ptp
+        - sbr
+        - static
+        - tap
+        - tuning
+        - vlan
+        - vrf
+    - name: nerdctl
+      copy:
+        dest: /usr/local/bin/nerdctl
+        src: /tmp/ubuntu/nerdctl
+        owner: root
+        group: root
+        mode: 0755
+    - name: buildkit
+      copy:
+        dest: /usr/local/bin/{{ item }}
+        src: /tmp/ubuntu/bin/{{ item }}
+        owner: root
+        group: root
+        mode: 0755
+      with_items:
+        - buildctl
+        - buildkitd
+    - name: systemd buildkit socket
+      copy:
+        dest: /etc/systemd/system/buildkit.socket
+        content: |
+          [Unit]
+          Description=BuildKit
+          Documentation=https://github.com/moby/buildkit
+          [Socket]
+          ListenStream=%t/buildkit/buildkitd.sock
+          SocketMode=0660
+          [Install]
+          WantedBy=sockets.target
+        mode: 0644
+        owner: root
+        group: root
+    - name: systemd buildkit
+      copy:
+        dest: /etc/systemd/system/buildkit.service
+        content: |
+          [Unit]
+          Description=BuildKit
+          Requires=buildkit.socket
+          After=buildkit.socket
+          Documentation=https://github.com/moby/buildkit
+          [Service]
+          Type=notify
+          ExecStart=/usr/local/bin/buildkitd --addr fd:// --oci-worker=auto --containerd-worker=true 
+          [Install]
+          WantedBy=multi-user.target
+        owner: root
+        group: root
+        mode: 0644
+      notify: systemd_reload
+    - name: containerd
+      copy:
+        dest: /usr/local/bin/{{ item }}
+        src: /tmp/bin/{{ item }}
+        owner: root
+        group: root
+        mode: 0755
+      with_items:
+        - containerd
+        - ctr
+        - containerd-stress
+        - containerd-shim-runc-v2
+    - name: containerd config file
+      file:
+        dest: /etc/containerd
+        state: directory
+        mode: 0644
+        owner: root
+        group: root
+    - name: containerd conf create
+      copy:
+        dest: /etc/containerd/config.toml
+        src: /tmp/ubuntu/config.toml
+        owner: root
+        group: root
+        mode: 0644
+    - name: containerd registry
+      file:
+        dest: /etc/containerd/certs.d/{{ item }}
+        state: directory
+        mode: 0644
+        owner: root
+        group: root
+      with_items:
+        - ['docker.io','gcr.io','ghcr.io','k8s.gcr.io','registry.k8s.io','quay.io','registry-1.docker.io']
+    - name: 创建镜像host配置文件
+      copy:
+        dest: /etc/containerd/certs.d/{{ item.0 }}/hosts.toml
+        content: |
+          server = "https://{{ item.0 }}"
+          [host."https://k8s-proxy.pages.dev"]
+            capabilities = ["pull", "resolve"]
+          [host."https://kkng-proxy.pages.dev"]
+            capabilities = ["pull", "resolve"]
+          [host."https://{{ item.1 }}"]
+            capabilities = ["pull", "resolve"]
+      with_together:
+        - ['docker.io','gcr.io','ghcr.io','k8s.gcr.io','registry.k8s.io','quay.io','registry-1.docker.io']
+        - ['dockerpull.cn','m.daocloud.io/gcr.io','m.daocloud.io/ghcr.io','m.daocloud.io/k8s.gcr.io','m.daocloud.io/registry.k8s.io','m.daocloud.io/quay.io',docker.xuanyuan.me]
+    - name: systemd containerd
+      copy:
+        dest: /etc/systemd/system/containerd.service
+        content: |
+          # Copyright The containerd Authors.
+          #
+          # Licensed under the Apache License, Version 2.0 (the "License");
+          # you may not use this file except in compliance with the License.
+          # You may obtain a copy of the License at
+          #
+          #     http://www.apache.org/licenses/LICENSE-2.0
+          #
+          # Unless required by applicable law or agreed to in writing, software
+          # distributed under the License is distributed on an "AS IS" BASIS,
+          # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+          # See the License for the specific language governing permissions and
+          # limitations under the License.
+          [Unit]
+          Description=containerd container runtime
+          Documentation=https://containerd.io
+          After=network.target dbus.service
+          [Service]
+          ExecStartPre=-/sbin/modprobe overlay
+          ExecStart=/usr/local/bin/containerd
+          Type=notify
+          Delegate=yes
+          KillMode=process
+          Restart=always
+          RestartSec=5
+          # Having non-zero Limit*s causes performance problems due to accounting overhead
+          # in the kernel. We recommend using cgroups to do container-local accounting.
+          LimitNPROC=infinity
+          LimitCORE=infinity
+          # Comment TasksMax if your systemd version does not supports it.
+          # Only systemd 226 and above support this version.
+          TasksMax=infinity
+          OOMScoreAdjust=-999
+          [Install]
+          WantedBy=multi-user.target
+        mode: 0644
+        owner: root
+        group: root
+      notify: systemd_reload
+    - name: init ipvs
+      copy:
+        dest: /etc/init.d/ipvs.sh
+        content: |
+          #!/bin/bash
+          modprobe ip_vs
+          modprobe ip_vs_rr
+          modprobe ip_vs_wrr
+          modprobe ip_vs_lc
+          modprobe ip_vs_wlc
+          modprobe ip_vs_lblc
+          modprobe ip_vs_lblcr
+          modprobe ip_vs_sh
+          modprobe ip_vs_dh
+          modprobe ip_vs_sed
+          modprobe ip_vs_nq
+          modprobe nf_conntrack
+          sysctl --system && sysctl -p /etc/sysctl.d/k8s.conf
+        mode: 0755
+        owner: root
+        group: root
+  
+  handlers:
+    - name: ipvs_reload
+      shell: |
+        sudo modprobe ip_vs
+        sudo modprobe ip_vs_rr
+        sudo modprobe ip_vs_wrr
+        sudo modprobe ip_vs_lc
+        sudo modprobe ip_vs_wlc
+        sudo modprobe ip_vs_lblc
+        sudo modprobe ip_vs_lblcr
+        sudo modprobe ip_vs_sh
+        sudo modprobe ip_vs_dh
+        sudo modprobe ip_vs_sed
+        sudo modprobe ip_vs_nq
+        sudo modprobe nf_conntrack
+        sudo modprobe  br_netfilter
+    - name: sysctl_reload
+      shell: |
+        sysctl -p /etc/sysctl.d/k8s.conf && sysctl --system
+    - name: systemd_reload
+      shell: |
+        systemctl daemon-reload
+        systemctl enable {{ item }}
+        systemctl restart {{ item }}
+      with_items:
+        - containerd
+        - buildkit.socket
+        - buildkit.service

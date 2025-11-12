@@ -1,0 +1,50 @@
+- name: ubuntu-playbook
+  hosts: etcd
+  become: true
+  tasks:
+    - name: 修改主机名
+      hostname:
+        name: "{{ inventory_hostname }}"
+    - name: 添加阿里云源
+      copy:
+        dest: /etc/apt/sources.list
+        content: |
+          deb http://mirrors.aliyun.com/ubuntu/ jammy main restricted
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy main restricted
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-updates main restricted
+          deb http://mirrors.aliyun.com/ubuntu/ jammy universe
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy universe
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-updates universe
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-updates universe
+          deb http://mirrors.aliyun.com/ubuntu/ jammy multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy multiverse
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-updates multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-updates multiverse
+          deb http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu/ jammy-backports main restricted universe multiverse
+          deb http://mirrors.aliyun.com/ubuntu jammy-security main restricted
+          deb-src http://mirrors.aliyun.com/ubuntu jammy-security main restricted
+          deb http://mirrors.aliyun.com/ubuntu jammy-security universe
+          deb-src http://mirrors.aliyun.com/ubuntu jammy-security universe
+          deb http://mirrors.aliyun.com/ubuntu jammy-security multiverse
+          deb-src http://mirrors.aliyun.com/ubuntu jammy-security multiverse
+        owner: root
+        group: root
+        mode: 0644
+    - name: 更新源
+      apt:
+        update_cache: true
+        cache_valid_time: 0
+        state: present
+    - name: 分发etcd
+      copy:
+        src: /tmp/etcd-v3.6.5-linux-amd64/{{  item }}
+        dest: /usr/local/bin/{{ item }}
+        mode: 0755
+        owner: root
+        group: root
+      with_items:
+        - etcd
+        - etcdctl
+        - etcdutl

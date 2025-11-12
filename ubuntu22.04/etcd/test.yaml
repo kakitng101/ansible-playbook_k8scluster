@@ -1,0 +1,7 @@
+- name: shell
+  host: etcd
+  become: true
+  tasks:
+    - name:
+      shell: |
+        sh -c /tmp/ubuntu/etcd/etcd.sh

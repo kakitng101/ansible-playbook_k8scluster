@@ -45,20 +45,20 @@
 # inventory.ini
 
 [master]
-master1 ansible_ssh_host=192.168.10.11
-master2 ansible_ssh_host=192.168.10.12
-master3 ansible_ssh_host=192.168.10.13
+master1 ansible_ssh_host=1.1.1.1
+master2 ansible_ssh_host=1.1.1.2
+master3 ansible_ssh_host=1.1.1.3
 
 [worker]
-worker1 ansible_ssh_host=192.168.10.4
-worker2 ansible_ssh_host=192.168.10.5
-worker3 ansible_ssh_host=192.168.10.6
-worker4 ansible_ssh_host=192.168.10.7
+worker1 ansible_ssh_host=1.1.1.4
+worker2 ansible_ssh_host=1.1.1.5
+worker3 ansible_ssh_host=1.1.1.6
+worker4 ansible_ssh_host=1.1.1.7
 
 [storage]
-storage1 ansible_ssh_host=192.168.10.31
-storage2 ansible_ssh_host=192.168.10.32
-storage3 ansible_ssh_host=192.168.10.33
+storage1 ansible_ssh_host=1.1.1.21
+storage2 ansible_ssh_host=1.1.1.22
+storage3 ansible_ssh_host=1.1.1.23
 
 [k8s:children]
 master
@@ -66,9 +66,6 @@ worker
 storage
 
 [lb]
-lb1 ansible_ssh_host=192.168.10.21 kp_state=lb1 kp_priority=99
-lb2 ansible_ssh_host=192.168.10.22 kp_state=lb2 kp_priority=77
-lb3 ansible_ssh_host=192.168.10.23 kp_state=lb3 kp_priority=55
-
-[test]
-test1 ansible_ssh_host=192.168.10.8 ansible_ssh_port=54321
+lb1 ansible_ssh_host=1.1.1.31 kp_state=lb1 kp_priority=99
+lb2 ansible_ssh_host=1.1.1.32 kp_state=lb2 kp_priority=77
+lb3 ansible_ssh_host=1.1.1.33 kp_state=lb3 kp_priority=55
