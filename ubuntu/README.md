@@ -371,10 +371,10 @@ repository is using `/root/.ansible/hosts`, add an entry similar to:
 
 ```ini
 [worker]
-worker1 ansible_ssh_host=192.168.122.22 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
-worker2 ansible_ssh_host=192.168.122.122 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
-worker3 ansible_ssh_host=192.168.122.197 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
-worker4 ansible_ssh_host=192.168.122.210 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
+worker1 ansible_ssh_host=<WORKER_IP_1> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+worker2 ansible_ssh_host=<WORKER_IP_2> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+worker3 ansible_ssh_host=<WORKER_IP_3> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+worker4 ansible_ssh_host=<WORKER_IP_4> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
 ```
 
 Confirm that Ansible recognizes the new inventory host and can connect to it:
@@ -414,7 +414,7 @@ the new worker:
 ```bash
 ansible -i ~/.ansible/hosts worker4 -b \
   -m shell \
-  -a 'kubeadm join 192.168.122.250:6443 --token <token> --discovery-token-ca-cert-hash sha256:<hash>'
+  -a 'kubeadm join <KUBE_VIP>:6443 --token <JOIN_TOKEN> --discovery-token-ca-cert-hash sha256:<CA_CERT_HASH>'
 ```
 
 Alternatively, the cluster playbook can generate the token on `master1` and use
