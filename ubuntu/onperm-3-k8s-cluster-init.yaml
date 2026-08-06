@@ -1,0 +1,200 @@
+- name: init k8s cluster config file
+  hosts: "{{ groups['master'] | first }}"
+  become: true
+  gather_facts: false
+  tags:
+    - k8s_init
+    - control_plane_join
+    - worker_join
+  vars:
+    vip_address: "{{ kube_vip_address | default('192.168.10.10') }}"
+    vip_port: "{{ kube_vip_port | default(6443) }}"
+    vip_interface: "{{ kube_vip_interface | default('eth0') }}"
+    pod_cidr: "{{ kube_pod_cidr | default('10.244.0.0/16') }}"
+  pre_tasks:
+    - name: validate etcd mode
+      assert:
+        that:
+          - (etcd_mode | default('internal')) in ['internal', 'external']
+        fail_msg: "etcd_mode must be either 'internal' or 'external'"
+  tasks:
+    - name: create k8s cluster initial config
+      shell: kubeadm config print init-defaults --component-configs KubeletConfiguration > /tmp/cluster.yaml
+      args:
+        executable: /bin/bash
+    - name: replace cluster etcd config
+      replace:
+        path: /tmp/cluster.yaml
+        regexp: 'etcd:\n\s+local:\n\s+dataDir: /var/lib/etcd'
+        replace: |-
+          etcd:
+            external:
+              endpoints:
+          {% for host in groups.get('etcd', []) %}
+                - https://{{ hostvars[host]['ansible_ssh_host'] }}:2379
+          {% endfor %}
+              caFile: /etc/kubernetes/pki/etcd/ca.crt
+              certFile: /etc/kubernetes/pki/apiserver-etcd-client.crt
+              keyFile: /etc/kubernetes/pki/apiserver-etcd-client.key
+      when: (etcd_mode | default('internal')) == 'external'
+    - name: modify advertise address config
+      replace:
+        path: /tmp/cluster.yaml
+        regexp: "advertiseAddress: 1.2.3.4"
+        replace: "advertiseAddress: {{ ansible_ssh_host }}"
+    - name: modify cluster name config
+      replace:
+        path: /tmp/cluster.yaml
+        regexp: "name: node"
+        replace: "name: {{ inventory_hostname }}"
+    - name: modify ca expire time configg
+      replace:
+        path: /tmp/cluster.yaml
+        regexp: '8760h0m0'
+        replace: '87600h0m0'
+    - name: insert ha apiserver config
+      lineinfile:
+        dest: /tmp/cluster.yaml
+        insertafter: clusterName.*$
+        line: "controlPlaneEndpoint: {{ vip_address }}:{{ vip_port }}"
+    - name: modify pod cidr config
+      lineinfile:
+        dest: /tmp/cluster.yaml
+        insertafter: serviceSubnet.*$
+        line: "  podSubnet: {{ pod_cidr }}"
+    - name: create k8s manifest folder
+      file:
+        path: /etc/kubernetes/manifests
+        state: directory
+        mode: "0755"
+        owner: root
+        group: root
+    - name: create kubevip static pod
+      shell: |
+        nerdctl run --rm --net host ghcr.io/kube-vip/kube-vip:v1.2.2 manifest pod --interface {{ vip_interface }} --address {{ vip_address }} --controlplane --services --arp --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
+      args:
+        creates: /etc/kubernetes/manifests/kube-vip.yaml
+    - name: fix kubevip leases lock error
+      replace:
+        path: /etc/kubernetes/manifests/kube-vip.yaml
+        regexp: '/etc/kubernetes/admin\.conf'
+        replace: '/etc/kubernetes/super-admin.conf'
+    - name: install kubernetes
+      shell: >-
+        kubeadm init
+        --config=/tmp/cluster.yaml
+        --upload-certs
+        --skip-phases=addon/kube-proxy
+      args:
+        creates: /etc/kubernetes/admin.conf
+      register: init_output
+    - name: print k8s initial status
+      debug:
+        msg: "{{ init_output.stdout_lines | default(['kubeadm init already completed']) }}"
+    - name: fix kubevip to normal privileges
+      replace:
+        path: /etc/kubernetes/manifests/kube-vip.yaml
+        regexp: '/etc/kubernetes/super-admin\.conf'
+        replace: '/etc/kubernetes/admin.conf'
+    - name: fetch kubevip file to ansible host
+      fetch:
+        src: /etc/kubernetes/manifests/kube-vip.yaml
+        dest: /tmp/kube-vip.yaml
+        flat: true
+    - name: create root kubeconfig directory
+      file:
+        path: /root/.kube
+        state: directory
+        mode: "0700"
+    - name: configure root kubeconfig for helm and kubectl
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+    - name: generate control plane join token
+      shell: kubeadm token create --print-join-command --certificate-key $(kubeadm init phase upload-certs --upload-certs | tail -1)
+      args:
+        executable: /bin/bash
+      register: control_plane_join_output
+    - name: generate worker node join token
+      shell: kubeadm token create --print-join-command
+      args:
+        executable: /bin/bash
+      register: node_join_output
+
+- name: other master node join into cluster
+  hosts: "{{ groups['master'][1:] }}"
+  become: true
+  serial: 1
+  tags:
+    - control_plane_join
+  tasks:    
+    - name: run join control plane command
+      args:
+        executable: /bin/bash
+        creates: /etc/kubernetes/kubelet.conf
+      shell: >-
+        /bin/bash -c "{{ hostvars[groups['master'] | first]['control_plane_join_output']['stdout'] }}"
+      register: master_join_result
+    - name: print master join result
+      debug:
+        msg: "{{ master_join_result.stdout_lines | default(['control-plane already joined']) }}"
+    - name: distribute kubevip for static pods
+      copy:
+        src: /tmp/kube-vip.yaml
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        owner: root
+        group: root
+        mode: 0644    
+- name: worker node join into cluster
+  hosts: worker
+  become: true
+  serial: 1
+  tags:
+    - worker_join
+  tasks:
+    - name: run join worker node command
+      args:
+        executable: /bin/bash
+        creates: /etc/kubernetes/kubelet.conf
+      shell: >-
+        /bin/bash -c "{{ hostvars[groups['master'] | first]['node_join_output']['stdout'] }}"
+    - name: modify worker node role
+      shell: hostnamectl set-hostname {{ inventory_hostname }}
+
+- name: validate nodes registered before CNI installation
+  hosts: "{{ groups['master'] | first }}"
+  become: true
+  tags:
+    - validation
+  vars:
+    expected_node_count: >-
+      {{
+        (groups['master'] | default([]))
+        | union(groups['worker'] | default([]))
+        | length
+      }}
+    expected_control_plane_count: "{{ groups['master'] | length }}"
+  tasks:
+    - name: wait for all Kubernetes nodes to register
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes -o name
+      register: registered_nodes
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: registered_nodes.stdout_lines | length == expected_node_count | int
+
+    - name: verify all control-plane nodes registered
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
+        -l node-role.kubernetes.io/control-plane -o name
+      register: registered_control_planes
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: >-
+        registered_control_planes.stdout_lines | length
+        == expected_control_plane_count | int

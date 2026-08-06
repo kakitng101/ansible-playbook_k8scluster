@@ -1,0 +1,154 @@
+- name: k8s-components-init
+  hosts: k8s
+  become: true
+  gather_facts: false
+  tasks:
+    - name: get containerd
+      get_url:
+        url: https://github.com/containerd/containerd/releases/download/v2.3.3/containerd-2.3.3-linux-amd64.tar.gz
+        dest: /tmp/containerd.tar.gz
+    
+    - name: install containerd binary
+      unarchive:
+        src: /tmp/containerd.tar.gz
+        dest: /usr/local/bin
+        remote_src: true
+        extra_opts:
+          - "--strip-components=1"
+        mode: 0755
+    
+    - name: create containerd folder
+      file:
+        path: /etc/containerd
+        state: directory
+        mode: 0755
+
+    - name: create containerd config
+      shell: containerd config default > /etc/containerd/config.toml
+      args:
+        creates: /etc/containerd/config.toml
+    
+    - name: modify containerd settings
+      replace:
+        path: /etc/containerd/config.toml
+        regexp: "SystemdCgroup = false"
+        replace: "SystemdCgroup = true"
+    
+    - name: register continerd service to systemd
+      copy:
+        src: containerd-systemd/containerd.service.j2
+        dest: /etc/systemd/system/containerd.service
+
+    - name: get runc
+      get_url:
+        url: https://github.com/opencontainers/runc/releases/download/v1.5.1/runc.amd64
+        dest: /usr/local/sbin/runc
+        mode: 0755
+        owner: root
+        group: root
+
+    - name: get CNI plugins
+      get_url:
+        url: https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-linux-amd64-v1.9.1.tgz
+        dest: /tmp/cni-plugins.tgz
+
+    - name: create CNI folder
+      file:
+        path: /opt/cni/bin
+        state: directory
+
+    - name: unarchive CNI plugins
+      unarchive:
+        src: /tmp/cni-plugins.tgz
+        dest: /opt/cni/bin
+        mode: 0755
+        remote_src: true
+
+    - name: reload containerd service
+      systemd:
+        name: containerd
+        daemon_reload: true
+        enabled: true
+        state: restarted
+
+    - name: get nerdctl
+      get_url: 
+        url: https://github.com/containerd/nerdctl/releases/download/v2.3.5/nerdctl-2.3.5-linux-amd64.tar.gz
+        dest: /tmp/nerdctl.tar.gz
+
+    - name: unarchive nerdctl binary
+      unarchive:
+        src: /tmp/nerdctl.tar.gz
+        dest: /usr/local/bin
+        mode: 0755
+        remote_src: true
+
+    - name: create apt keyring directory
+      file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: "0755"
+
+    - name: download Kubernetes repository key
+      get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/v{{ version | default('1.36') }}/deb/Release.key"
+        dest: /etc/apt/keyrings/kubernetes.asc
+        mode: "0644"
+
+    - name: configure Kubernetes repository
+      apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes.asc] https://pkgs.k8s.io/core:/stable:/v{{ version | default('1.36') }}/deb/ /"
+        filename: kubernetes
+        state: present
+        update_cache: true
+- name: download helm binary
+  hosts: master
+  become: true
+  tasks:
+    - name: get helm
+      get_url:
+        url: https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz
+        dest: /tmp/helm.tar.gz
+        mode: 0644
+    - name: unarchive
+      unarchive:
+        src: /tmp/helm.tar.gz
+        dest: /usr/local/bin
+        remote_src: true
+        mode: 0755
+        extra_opts:
+          - "--strip-components=1"
+    - name: install kubernetes cli
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+          - kubectl
+        state: present
+        update_cache: true
+    - name: hold kubernetes cli packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+- name: install kubernetes node cli
+  hosts: worker
+  become: true
+  tasks:
+    - name: install worker kubernetes packages
+      apt:
+        name:
+          - kubelet
+          - kubeadm
+        state: present
+        update_cache: true
+    - name: hold worker kubernetes packages
+      dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm

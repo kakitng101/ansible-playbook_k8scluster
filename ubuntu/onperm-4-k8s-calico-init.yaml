@@ -1,0 +1,164 @@
+---
+- name: Install Calico CNI in eBPF mode
+  hosts: master1
+  become: true
+  gather_facts: false
+  vars:
+    kubeconfig_path: /etc/kubernetes/admin.conf
+    calico_version: v3.32.1
+
+  tasks:
+    - name: Check the Kubernetes administrator kubeconfig
+      ansible.builtin.stat:
+        path: "{{ kubeconfig_path }}"
+      register: kubernetes_admin_kubeconfig
+
+    - name: Require an initialized Kubernetes control plane
+      ansible.builtin.assert:
+        that:
+          - kubernetes_admin_kubeconfig.stat.exists
+        fail_msg: >-
+          {{ kubeconfig_path }} does not exist. Run the Kubernetes cluster
+          initialization playbook before installing Calico.
+
+    - name: Render the Kubernetes API endpoint configuration
+      ansible.builtin.template:
+        src: calico/kubernetes-services-endpoint.yaml.j2
+        dest: /tmp/kubernetes-services-endpoint.yaml
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Render the Calico custom resources
+      ansible.builtin.template:
+        src: calico/custom-resources.yaml.j2
+        dest: /tmp/custom-resources.yaml
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Apply the Calico custom resource definitions
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - apply
+          - --server-side
+          - -f
+          - "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/v1_crd_projectcalico_org.yaml"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Wait for the Calico operator custom resource definitions
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - wait
+          - --for=condition=Established
+          - --timeout=180s
+          - customresourcedefinition/installations.operator.tigera.io
+          - customresourcedefinition/apiservers.operator.tigera.io
+          - customresourcedefinition/goldmanes.operator.tigera.io
+          - customresourcedefinition/whiskers.operator.tigera.io
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Apply the direct Kubernetes API endpoint for Calico
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - apply
+          - -f
+          - /tmp/kubernetes-services-endpoint.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Apply the Tigera Operator
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - apply
+          - -f
+          - "https://raw.githubusercontent.com/projectcalico/calico/{{ calico_version }}/manifests/tigera-operator.yaml"
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Wait for the Tigera Operator deployment
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - rollout
+          - status
+          - deployment/tigera-operator
+          - --namespace=tigera-operator
+          - --timeout=300s
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      changed_when: false
+
+    - name: Apply the Calico eBPF custom resources
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - apply
+          - -f
+          - /tmp/custom-resources.yaml
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+
+    - name: Wait for the core Calico installation to become available
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - tigerastatus/calico
+          - -o
+          - jsonpath={.status.conditions[?(@.type=="Available")].status}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: calico_available
+      changed_when: false
+      retries: 60
+      delay: 10
+      until: calico_available.stdout == "True"
+
+    - name: Verify that all Kubernetes nodes are ready
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - get
+          - nodes
+          - -o
+          - jsonpath={range .items[*]}{.metadata.name}{"="}{range .status.conditions[?(@.type=="Ready")]}{.status}{end}{"\n"}{end}
+      environment:
+        KUBECONFIG: "{{ kubeconfig_path }}"
+      register: calico_node_readiness
+      changed_when: false
+      failed_when: >-
+        calico_node_readiness.stdout_lines | length != 6 or
+        calico_node_readiness.stdout_lines |
+        reject('search', '=True$') | list | length > 0
+
+    - name: Show Kubernetes node readiness
+      ansible.builtin.debug:
+        var: calico_node_readiness.stdout_lines
+
+- name: Install metrics-server
+  hosts: master1
+  become: true
+  tasks:
+    - name: Sync metrics-server chart
+      ansible.builtin.copy:
+        src: metrics-server/
+        dest: /tmp/metrics-server/
+        owner: root
+        group: root
+        directory_mode: "0755"
+        mode: preserve
+
+    - name: Install or upgrade metrics-server
+      ansible.builtin.shell:
+        cmd: helm upgrade --install metrics-server /tmp/metrics-server --namespace kube-system
+        executable: /bin/bash
+      environment:
+        KUBECONFIG: /etc/kubernetes/admin.conf

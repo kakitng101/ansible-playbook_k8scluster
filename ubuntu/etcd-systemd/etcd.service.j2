@@ -1,0 +1,41 @@
+[Unit]
+Description=etcd key-value store
+Documentation=https://github.com/etcd-io/etcd
+After=network-online.target local-fs.target remote-fs.target time-sync.target
+Wants=network-online.target local-fs.target remote-fs.target time-sync.target
+
+[Service]
+User=root
+Type=notify
+Environment=ETCD_DATA_DIR=/var/lib/etcd
+Environment=ETCD_NAME={{ inventory_hostname }}
+Environment=ETCD_INITIAL_CLUSTER_TOKEN=k8s-etcd-external-node
+Environment=ETCD_INITIAL_CLUSTER_STATE=new
+Environment=ETCD_INITIAL_CLUSTER={% for host in ansible_play_hosts %}{{ host }}=https://{{ hostvars[host].ansible_ssh_host }}:2380{% if not loop.last %},{% endif %}{% endfor %}
+
+# 监听地址与宣告地址（根据当前节点的真实 IP 填写）follow the ansible hosts setting
+Environment=ETCD_LISTEN_PEER_URLS=https://{{ ansible_ssh_host }}:2380
+Environment=ETCD_INITIAL_ADVERTISE_PEER_URLS=https://{{ ansible_ssh_host }}:2380
+Environment=ETCD_LISTEN_CLIENT_URLS=https://{{ ansible_ssh_host }}:2379,https://127.0.0.1:2379
+Environment=ETCD_ADVERTISE_CLIENT_URLS=https://{{ ansible_ssh_host }}:2379
+
+# ----------------- 客户端与节点间的 SSL/TLS 安全配置 -----------------
+# 1. 客户端访问安全配置 (Client SSL/TLS)
+Environment=ETCD_CERT_FILE={{ etcd_cert_file }}
+Environment=ETCD_KEY_FILE={{ etcd_key_file }}
+Environment=ETCD_CLIENT_CERT_AUTH=true
+Environment=ETCD_TRUSTED_CA_FILE={{ etcd_trusted_ca_file }}
+
+# 2. 集群内部节点间通信安全配置 (Peer SSL/TLS)
+Environment=ETCD_PEER_CERT_FILE={{ etcd_cert_file }}
+Environment=ETCD_PEER_KEY_FILE={{ etcd_key_file }}
+Environment=ETCD_PEER_CLIENT_CERT_AUTH=true
+Environment=ETCD_PEER_TRUSTED_CA_FILE={{ etcd_trusted_ca_file }}
+
+ExecStart=/usr/bin/etcd
+Restart=always
+RestartSec=10s
+LimitNOFILE=40000
+
+[Install]
+WantedBy=multi-user.target

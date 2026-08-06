@@ -1,0 +1,78 @@
+- name: etcd register
+  become: true
+  hosts: etcd
+  tasks:
+    - name: create etcd directories
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0755"
+      loop:
+        - /var/lib/etcd
+        - /etc/etcd/pki
+        - /tmp/etcd
+    - name: get etcd binary file
+      get_url:
+        url: https://github.com/etcd-io/etcd/releases/download/v3.7.1/etcd-v3.7.1-linux-amd64.tar.gz
+        dest: /tmp/etcd.tar.gz
+        mode: 0644
+    - name: untar etcd file
+      unarchive:
+        src: /tmp/etcd.tar.gz
+        dest: /tmp/etcd
+        extra_opts:
+          - --strip-components=1
+        remote_src: true
+    - name: register etcd to system command
+      copy: 
+        src: /tmp/etcd/{{ item }}
+        dest: /usr/bin/{{ item }}
+        mode: 0755
+        owner: root
+        remote_src: true
+      loop:
+        - etcd
+        - etcdctl
+        - etcdutl
+    - name: register etcd to systemd service
+      template:
+        src: etcd-systemd/etcd.service.j2
+        dest: /etc/systemd/system/etcd.service
+        mode: 0600
+      notify:
+        - reload etcd service
+    - name: sync client certs to etcd server
+      tags:
+        - init
+      copy:
+        src: "/opt/certs/{{ inventory_hostname }}/"
+        dest: "/etc/etcd/pki/"
+        mode: 0600
+    - name: sync ca certs to etcd server
+      tags:
+        - init
+      copy:
+        src: /opt/certs/ca.pem
+        dest: /etc/etcd/pki/ca.pem
+        mode: 0600
+    - name: init etcd service
+      systemd:
+        daemon_reload: true
+        force: true
+        enabled: true
+        name: etcd
+        state: restarted
+    - name: check for etcd healthy
+      command: >
+        etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/etcd/pki/ca.pem --cert=/etc/etcd/pki/etcd.pem --key=/etc/etcd/pki/etcd-key.pem endpoint health
+      register: etcd_healthy
+      changed_when: false
+    - name: show healthy status
+      debug:
+        var: etcd_healthy.stdout
+  handlers:
+    - name: reload etcd service
+      systemd:
+        name: etcd
+        daemon_reload: true
+        state: restarted

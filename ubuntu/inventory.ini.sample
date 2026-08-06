@@ -1,0 +1,21 @@
+[master]
+master1 ansible_ssh_host=192.168.122.36 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
+master2 ansible_ssh_host=192.168.122.247 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
+master3 ansible_ssh_host=192.168.122.201 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
+
+
+[worker]
+worker1 ansible_ssh_host=192.168.122.22 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
+worker2 ansible_ssh_host=192.168.122.122 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
+worker3 ansible_ssh_host=192.168.122.197 ansible_ssh_user=ubuntu ansible_ssh_pass=123456
+
+[k8s:children]
+master
+worker
+
+[k8s:vars]
+etcd_mode=internal
+kube_vip_address=192.168.122.250
+kube_vip_port=6443
+kube_vip_interface=enp1s0
+kube_pod_cidr=10.244.0.0/16

@@ -1,0 +1,180 @@
+---
+- name: initial for all k8s nodes
+  hosts: k8s
+  become: true
+  gather_facts: true
+  vars:
+    k8s_packages:
+      - conntrack
+      - curl
+      - socat
+      - ebtables
+      - ipset
+      - net-tools
+      - wget
+      - telnet
+      - chrony
+      - ca-certificates
+      - gnupg
+      - apt-transport-https
+      - kmod
+
+    k8s_kernel_modules:
+      - overlay
+      - br_netfilter
+      - nf_conntrack
+
+  tasks:
+    - name: system pre check
+      ansible.builtin.assert:
+        that:
+          - ansible_distribution == "Ubuntu"
+        fail_msg: >-
+          This playbook only support for ubuntu system:
+          {{ ansible_distribution }} {{ ansible_distribution_version }}
+
+    - name: check UFW
+      ansible.builtin.stat:
+        path: /usr/sbin/ufw
+      register: ufw_binary
+
+    - name: get UFW status
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/ufw
+          - status
+      register: ufw_status
+      changed_when: false
+      when: ufw_binary.stat.exists
+
+    - name: disable UFW
+      ansible.builtin.command:
+        argv:
+          - /usr/sbin/ufw
+          - --force
+          - disable
+      when:
+        - ufw_binary.stat.exists
+        - "'Status: active' in ufw_status.stdout"
+
+    - name: turn of swap
+      ansible.builtin.command:
+        cmd: swapoff -a
+      when: ansible_swaptotal_mb | int > 0
+      changed_when: true
+
+    - name: disable swap
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^(\s*)([^#\s]\S*\s+\S+\s+swap\s+.*)$'
+        replace: '\1# \2'
+        backup: true
+
+    - name: modify node name same as ansible hosts
+      shell: hostnamectl hostname {{ inventory_hostname }}
+
+    - name: Ensure all inventory hosts are present in /etc/hosts
+      blockinfile:
+        path: /etc/hosts
+        marker: "# {mark} ANSIBLE MANAGED HOSTS"
+        block: |
+          {% for host in groups['all'] %}
+          {{ hostvars[host]['ansible_host'] | default(hostvars[host]['ansible_ssh_host'] | default(hostvars[host]['inventory_hostname'])) }} {{ hostvars[host]['ansible_hostname'] | default(host) }} {{ host }}
+          {% endfor %}
+
+    - name: update apt caching
+      ansible.builtin.apt:
+        name: "{{ k8s_packages }}"
+        state: present
+        update_cache: true
+        cache_valid_time: 3600
+
+    - name: kernel modules setting
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          {% for module in k8s_kernel_modules %}
+          {{ module }}
+          {% endfor %}
+
+    - name: kernel modules load
+      ansible.builtin.command:
+        argv:
+          - modprobe
+          - "{{ item }}"
+      loop: "{{ k8s_kernel_modules }}"
+      changed_when: false
+
+    - name: kernel turning
+      ansible.builtin.copy:
+        dest: /etc/sysctl.d/99-kubernetes.conf
+        owner: root
+        group: root
+        mode: "0644"
+        content: |
+          # Kubernetes networking
+          net.ipv4.ip_forward = 1
+          net.bridge.bridge-nf-call-iptables = 1
+          net.bridge.bridge-nf-call-ip6tables = 1
+
+          # Memory
+          vm.overcommit_memory = 1
+          vm.panic_on_oom = 0
+
+          # File descriptors and inotify
+          fs.inotify.max_user_watches = 89100
+          fs.file-max = 52706963
+          fs.nr_open = 52706963
+
+          # Conntrack
+          net.netfilter.nf_conntrack_max = 2310720
+
+          # TCP keepalive
+          net.ipv4.tcp_keepalive_time = 600
+          net.ipv4.tcp_keepalive_probes = 3
+          net.ipv4.tcp_keepalive_intvl = 15
+
+          # TCP connection handling
+          net.ipv4.tcp_max_tw_buckets = 36000
+          net.ipv4.tcp_tw_reuse = 1
+          net.ipv4.tcp_max_orphans = 327680
+          net.ipv4.tcp_orphan_retries = 3
+          net.ipv4.tcp_syncookies = 1
+          net.ipv4.tcp_max_syn_backlog = 16384
+
+          # Socket queue
+          net.core.somaxconn = 16384
+      notify: sysctl reload
+
+    - name: apply sysctl setting
+      ansible.builtin.meta: flush_handlers
+
+    - name: 
+      ansible.builtin.command:
+        cmd: swapon --show
+      register: swap_status
+      changed_when: false
+      failed_when: swap_status.stdout | length > 0
+
+    - name: 
+      ansible.builtin.command:
+        cmd: sysctl -n net.ipv4.ip_forward
+      register: ip_forward_status
+      changed_when: false
+      failed_when: ip_forward_status.stdout | trim != "1"
+
+    - name: 
+      ansible.builtin.command:
+        cmd: lsmod
+      register: loaded_modules
+      changed_when: false
+      failed_when: >-
+        'br_netfilter' not in loaded_modules.stdout
+
+  handlers:
+    - name: sysctl reload
+      ansible.builtin.command:
+        cmd: sysctl --load=/etc/sysctl.d/99-kubernetes.conf

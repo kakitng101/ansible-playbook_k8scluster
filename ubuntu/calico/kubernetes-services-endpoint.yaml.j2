@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: tigera-operator
+  labels:
+    name: tigera-operator
+    pod-security.kubernetes.io/enforce: privileged
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kubernetes-services-endpoint
+  namespace: tigera-operator
+data:
+  KUBERNETES_SERVICE_HOST: "{{ kube_vip_address | default('192.168.10.10') }}"
+  KUBERNETES_SERVICE_PORT: "{{ kube_vip_port | default(6443) }}"

@@ -1,0 +1,97 @@
+- name: init etcd ssl certs
+  hosts: etcd
+  become: true
+  vars:
+    version: 1.6.5
+  tasks:
+    - name: download cfssl tools
+      get_url:
+        url: "https://github.com/cloudflare/cfssl/releases/download/v{{ version | default('1.6.5') }}/cfssl_{{ version | default('1.6.5') }}_linux_amd64"
+        dest: /usr/bin/cfssl
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      become: true
+
+    - name: download cfssljson tools
+      get_url:
+        url: "https://github.com/cloudflare/cfssl/releases/download/v{{ version }}/cfssljson_{{ version }}_linux_amd64"
+        dest: /usr/bin/cfssljson
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      become: true
+
+    - name: create cert folder
+      file:
+        path: /opt/certs/{{ item }}
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      become: true
+      loop: "{{ ansible_play_hosts }}"
+
+    - name: prepare ca-config file
+      template:
+        src: certs/ca-config.json.j2
+        dest: /opt/certs/ca-config.json
+        mode: "0600"
+      delegate_to: localhost
+      run_once: true
+      become: true
+
+    - name: prepare ca-csr file
+      template:
+        src: certs/ca-csr.json.j2
+        dest: /opt/certs/ca-csr.json
+        mode: "0600"
+      delegate_to: localhost
+      run_once: true
+      become: true
+
+    - name: init ca
+      tags:
+        - init
+      shell: cfssl gencert -initca /opt/certs/ca-csr.json | cfssljson -bare ca
+      args:
+        chdir: /opt/certs
+      delegate_to: localhost
+      run_once: true
+      become: true
+
+    - name: create etcd server folder
+      file:
+        path: "/opt/certs/{{ item }}"
+        state: directory
+        mode: "0755"
+      delegate_to: localhost
+      run_once: true
+      become: true
+      loop: "{{ ansible_play_hosts }}"
+
+    - name: prepare etcd-csr file
+      template:
+        src: certs/etcd-csr.json.j2
+        dest: "/opt/certs/{{ item }}/etcd-csr.json"
+      delegate_to: localhost
+      run_once: true
+      become: true
+      loop: "{{ ansible_play_hosts }}"
+
+    - name: init client certs
+      tags:
+        - init
+      shell: >
+        cfssl gencert 
+        -ca=/opt/certs/ca.pem 
+        -ca-key=/opt/certs/ca-key.pem 
+        -config=/opt/certs/ca-config.json 
+        -profile=etcd 
+        etcd-csr.json | cfssljson -bare etcd
+      args:
+        chdir: "/opt/certs/{{ item }}"
+      delegate_to: localhost
+      run_once: true
+      become: true
+      loop: "{{ ansible_play_hosts }}"

@@ -1,0 +1,18 @@
+{
+  "CN": "{{ item }}",
+  "hosts": [
+    "127.0.0.1",
+    "localhost",
+    "{{ hostvars[item].ansible_ssh_host }}"
+  ],
+  "key": { "algo": "rsa", "size": 2048 },
+  "names": [
+    {
+      "C": "k8s",
+      "ST": "k8s",
+      "L": "k8s",
+      "O": "etcd",
+      "OU": "System"
+    }
+  ]
+}
