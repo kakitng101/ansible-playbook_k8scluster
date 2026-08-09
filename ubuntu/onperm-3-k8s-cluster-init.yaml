@@ -17,6 +17,25 @@
         that:
           - (etcd_mode | default('internal')) in ['internal', 'external']
         fail_msg: "etcd_mode must be either 'internal' or 'external'"
+    - name: check external etcd credentials
+      stat:
+        path: "/etc/kubernetes/pki/etcd/{{ item }}"
+      loop:
+        - ca.pem
+        - cluster.pem
+        - cluster.key
+      register: external_etcd_credentials
+      when: (etcd_mode | default('internal')) == 'external'
+
+    - name: require external etcd inventory and credentials
+      assert:
+        that:
+          - groups.get('etcd', []) | length > 0
+          - external_etcd_credentials.results | map(attribute='stat.exists') | min
+        fail_msg: >-
+          External etcd requires an [etcd] inventory group and ca.pem,
+          cluster.pem, cluster.key in /etc/kubernetes/pki/etcd on master1.
+      when: (etcd_mode | default('internal')) == 'external'
   tasks:
     - name: create k8s cluster initial config
       shell: kubeadm config print init-defaults --component-configs KubeletConfiguration > /tmp/cluster.yaml
@@ -31,17 +50,17 @@
             external:
               endpoints:
           {% for host in groups.get('etcd', []) %}
-                - https://{{ hostvars[host]['ansible_ssh_host'] }}:2379
+                - https://{{ hostvars[host].ansible_host | default(hostvars[host].ansible_ssh_host) }}:2379
           {% endfor %}
-              caFile: /etc/kubernetes/pki/etcd/ca.crt
-              certFile: /etc/kubernetes/pki/apiserver-etcd-client.crt
-              keyFile: /etc/kubernetes/pki/apiserver-etcd-client.key
+              caFile: /etc/kubernetes/pki/etcd/ca.pem
+              certFile: /etc/kubernetes/pki/etcd/cluster.pem
+              keyFile: /etc/kubernetes/pki/etcd/cluster.key
       when: (etcd_mode | default('internal')) == 'external'
     - name: modify advertise address config
       replace:
         path: /tmp/cluster.yaml
         regexp: "advertiseAddress: 1.2.3.4"
-        replace: "advertiseAddress: {{ ansible_ssh_host }}"
+        replace: "advertiseAddress: {{ ansible_host | default(ansible_ssh_host) }}"
     - name: modify cluster name config
       replace:
         path: /tmp/cluster.yaml
@@ -69,6 +88,35 @@
         mode: "0755"
         owner: root
         group: root
+    - name: check whether kube-vip is already bound for bootstrap
+      command:
+        argv:
+          - ip
+          - -o
+          - address
+          - show
+          - dev
+          - "{{ vip_interface }}"
+      register: vip_address_state
+      changed_when: false
+
+    - name: check whether Kubernetes is already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubernetes_admin_conf
+
+    - name: bind kube-vip before kubeadm bootstrap
+      command:
+        argv:
+          - ip
+          - address
+          - add
+          - "{{ vip_address }}/32"
+          - dev
+          - "{{ vip_interface }}"
+      when:
+        - not kubernetes_admin_conf.stat.exists
+        - vip_address not in vip_address_state.stdout
     - name: create kubevip static pod
       shell: |
         nerdctl run --rm --net host ghcr.io/kube-vip/kube-vip:v1.2.2 manifest pod --interface {{ vip_interface }} --address {{ vip_address }} --controlplane --services --arp --leaderElection > /etc/kubernetes/manifests/kube-vip.yaml
@@ -131,6 +179,13 @@
   serial: 1
   tags:
     - control_plane_join
+  pre_tasks:
+    - name: explain external etcd certificate distribution
+      debug:
+        msg: >-
+          kubeadm --upload-certs transfers the external-etcd credentials declared
+          in ClusterConfiguration; no separate Ansible copy to joining masters is needed.
+      when: (etcd_mode | default('internal')) == 'external'
   tasks:    
     - name: run join control plane command
       args:
@@ -162,9 +217,6 @@
         creates: /etc/kubernetes/kubelet.conf
       shell: >-
         /bin/bash -c "{{ hostvars[groups['master'] | first]['node_join_output']['stdout'] }}"
-    - name: modify worker node role
-      shell: hostnamectl set-hostname {{ inventory_hostname }}
-
 - name: validate nodes registered before CNI installation
   hosts: "{{ groups['master'] | first }}"
   become: true

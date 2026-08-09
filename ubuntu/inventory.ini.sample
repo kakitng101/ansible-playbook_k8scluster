@@ -9,6 +9,11 @@ worker1 ansible_ssh_host=<WORKER_IP_1> ansible_ssh_user=<SSH_USER> ansible_ssh_p
 worker2 ansible_ssh_host=<WORKER_IP_2> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
 worker3 ansible_ssh_host=<WORKER_IP_3> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
 
+[etcd]
+etcd1 ansible_ssh_host=<ETCD_IP_1> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+etcd2 ansible_ssh_host=<ETCD_IP_2> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+etcd3 ansible_ssh_host=<ETCD_IP_3> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+
 [k8s:children]
 master
 worker
@@ -19,3 +24,10 @@ kube_vip_address=<KUBE_VIP>
 kube_vip_port=6443
 kube_vip_interface=<NETWORK_INTERFACE>
 kube_pod_cidr=<POD_CIDR>
+
+[etcd:vars]
+# This directory is on the Ansible controller (CentOS or Ubuntu are both supported).
+etcd_cert_work_dir=/tmp/k8s-etcd-certs
+etcd_cert_file=/etc/etcd/pki/cluster.pem
+etcd_key_file=/etc/etcd/pki/cluster.key
+etcd_trusted_ca_file=/etc/etcd/pki/ca.pem

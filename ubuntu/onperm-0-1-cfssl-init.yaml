@@ -3,95 +3,121 @@
   become: true
   vars:
     version: 1.6.5
+    cert_work_dir: "{{ etcd_cert_work_dir | default('/tmp/k8s-etcd-certs') }}"
+    cfssl_bin: "{{ cert_work_dir }}/bin/cfssl"
+    cfssljson_bin: "{{ cert_work_dir }}/bin/cfssljson"
   tasks:
+    - name: validate external etcd inventory
+      assert:
+        that:
+          - groups['etcd'] | length >= 1
+          - hostvars[item].ansible_host is defined or hostvars[item].ansible_ssh_host is defined
+        fail_msg: "Every host in [etcd] must define ansible_host or ansible_ssh_host"
+      loop: "{{ groups['etcd'] }}"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
+    - name: create certificate work directories on controller
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: "0700"
+      loop:
+        - "{{ cert_work_dir }}"
+        - "{{ cert_work_dir }}/bin"
+      delegate_to: localhost
+      run_once: true
+      become: false
+
     - name: download cfssl tools
       get_url:
         url: "https://github.com/cloudflare/cfssl/releases/download/v{{ version | default('1.6.5') }}/cfssl_{{ version | default('1.6.5') }}_linux_amd64"
-        dest: /usr/bin/cfssl
+        dest: "{{ cfssl_bin }}"
         mode: "0755"
       delegate_to: localhost
       run_once: true
-      become: true
+      become: false
 
     - name: download cfssljson tools
       get_url:
         url: "https://github.com/cloudflare/cfssl/releases/download/v{{ version }}/cfssljson_{{ version }}_linux_amd64"
-        dest: /usr/bin/cfssljson
+        dest: "{{ cfssljson_bin }}"
         mode: "0755"
       delegate_to: localhost
       run_once: true
-      become: true
-
-    - name: create cert folder
-      file:
-        path: /opt/certs/{{ item }}
-        state: directory
-        mode: "0755"
-      delegate_to: localhost
-      run_once: true
-      become: true
-      loop: "{{ ansible_play_hosts }}"
+      become: false
 
     - name: prepare ca-config file
       template:
         src: certs/ca-config.json.j2
-        dest: /opt/certs/ca-config.json
+        dest: "{{ cert_work_dir }}/ca-config.json"
         mode: "0600"
       delegate_to: localhost
       run_once: true
-      become: true
+      become: false
 
     - name: prepare ca-csr file
       template:
         src: certs/ca-csr.json.j2
-        dest: /opt/certs/ca-csr.json
+        dest: "{{ cert_work_dir }}/ca-csr.json"
         mode: "0600"
       delegate_to: localhost
       run_once: true
-      become: true
+      become: false
 
     - name: init ca
       tags:
         - init
-      shell: cfssl gencert -initca /opt/certs/ca-csr.json | cfssljson -bare ca
+      shell: >-
+        {{ cfssl_bin }} gencert -initca ca-csr.json |
+        {{ cfssljson_bin }} -bare ca
       args:
-        chdir: /opt/certs
+        chdir: "{{ cert_work_dir }}"
+        creates: "{{ cert_work_dir }}/ca.pem"
       delegate_to: localhost
       run_once: true
-      become: true
-
-    - name: create etcd server folder
-      file:
-        path: "/opt/certs/{{ item }}"
-        state: directory
-        mode: "0755"
-      delegate_to: localhost
-      run_once: true
-      become: true
-      loop: "{{ ansible_play_hosts }}"
+      become: false
 
     - name: prepare etcd-csr file
       template:
         src: certs/etcd-csr.json.j2
-        dest: "/opt/certs/{{ item }}/etcd-csr.json"
+        dest: "{{ cert_work_dir }}/etcd-csr.json"
+        mode: "0600"
       delegate_to: localhost
       run_once: true
-      become: true
-      loop: "{{ ansible_play_hosts }}"
+      become: false
 
     - name: init client certs
       tags:
         - init
       shell: >
-        cfssl gencert 
-        -ca=/opt/certs/ca.pem 
-        -ca-key=/opt/certs/ca-key.pem 
-        -config=/opt/certs/ca-config.json 
+        {{ cfssl_bin }} gencert
+        -ca={{ cert_work_dir }}/ca.pem
+        -ca-key={{ cert_work_dir }}/ca-key.pem
+        -config={{ cert_work_dir }}/ca-config.json
         -profile=etcd 
         etcd-csr.json | cfssljson -bare etcd
       args:
-        chdir: "/opt/certs/{{ item }}"
+        chdir: "{{ cert_work_dir }}"
+        creates: "{{ cert_work_dir }}/cluster.pem"
+      environment:
+        PATH: "{{ cert_work_dir }}/bin:{{ ansible_env.PATH | default('/usr/local/bin:/usr/bin:/bin') }}"
       delegate_to: localhost
       run_once: true
-      become: true
-      loop: "{{ ansible_play_hosts }}"
+      become: false
+
+    - name: rename generated cluster certificate and key
+      command:
+        argv:
+          - mv
+          - "{{ cert_work_dir }}/{{ item.src }}"
+          - "{{ cert_work_dir }}/{{ item.dest }}"
+      args:
+        creates: "{{ cert_work_dir }}/{{ item.dest }}"
+      loop:
+        - { src: etcd.pem, dest: cluster.pem }
+        - { src: etcd-key.pem, dest: cluster.key }
+      delegate_to: localhost
+      run_once: true
+      become: false

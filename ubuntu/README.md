@@ -82,11 +82,19 @@ kube_vip_interface=eth0
 kube_pod_cidr=10.244.0.0/16
 ```
 
+For external etcd, the inventory must also contain an `[etcd]` group. The
+complete example is provided in `inventory.ini.sample`, including the
+controller-side certificate work directory and the three etcd certificate
+paths.
+
 The kube-vip address must be unused, reachable from every Kubernetes node, and on the interface configured by `kube_vip_interface`. The example addresses are placeholders and must be replaced before a real deployment.
 
 ## Deployment Design
 
 - Kubernetes uses a highly available API endpoint provided by kube-vip.
+- On the first initialization only, the playbook idempotently adds the VIP as
+  a `/32` address to `kube_vip_interface` before starting kubeadm, so the
+  bootstrap API endpoint is reachable before kube-vip assumes ownership.
 - kubeadm skips the `addon/kube-proxy` phase.
 - Calico uses the eBPF data plane and implements Kubernetes Service handling.
 - Calico reaches the API server directly through `kube_vip_address:kube_vip_port` instead of relying on the Kubernetes Service ClusterIP during bootstrap.
@@ -101,7 +109,9 @@ The kube-vip address must be unused, reachable from every Kubernetes node, and o
 - x86-64 processors. The downloaded binaries are currently pinned to `linux-amd64` builds.
 - SSH access from the Ansible controller to every target node.
 - A remote user with passwordless sudo, or the sudo password available for `-K`.
-- Unique hostnames, MAC addresses, and product UUIDs.
+- Unique MAC addresses and product UUIDs. The preparation playbook sets each
+  target hostname to its `inventory_hostname` before kubeadm runs and enables
+  cloud-init's `preserve_hostname` setting when `/etc/cloud/cloud.cfg` exists.
 - Time synchronization and full network connectivity between all nodes.
 - Internet or mirror access for GitHub, `pkgs.k8s.io`, `registry.k8s.io`, `ghcr.io`, `quay.io`, and the Calico image registries.
 - TCP 6443 connectivity to the kube-vip API endpoint.
@@ -238,7 +248,11 @@ Use this path only when `etcd_mode=external`. External etcd is optional and is n
 
 ### 0-1. Generate the external-etcd certificates
 
-This playbook installs CFSSL tools on the Ansible controller and generates the CA and per-member certificates under `/opt/certs` on the controller.
+This playbook downloads standalone CFSSL tools into
+`etcd_cert_work_dir` (default `/tmp/k8s-etcd-certs`) on the Ansible controller
+and does not require apt, yum, root access, or an Ubuntu controller. It creates
+one `cluster.pem` whose SAN list includes every etcd inventory hostname and IP,
+plus `cluster.key` and `ca.pem`.
 
 ```bash
 ansible-playbook -i inventory.ini onperm-0-1-cfssl-init.yaml
@@ -248,7 +262,15 @@ The CA generation task is not a certificate-rotation workflow. Do not rerun it a
 
 ### 0-2. Install the external-etcd services
 
-This playbook installs etcd on the three hosts, distributes their certificates, enables the systemd service, and checks each local endpoint.
+This playbook installs etcd on the three hosts, distributes the cluster
+credentials, enables the systemd service, checks each local endpoint, and
+automatically copies these files to the first host in `[master]`:
+
+```text
+/etc/kubernetes/pki/etcd/ca.pem
+/etc/kubernetes/pki/etcd/cluster.pem
+/etc/kubernetes/pki/etcd/cluster.key
+```
 
 ```bash
 ansible-playbook -i inventory.ini onperm-0-2-etcd-service-init.yaml
@@ -260,18 +282,16 @@ Before changing the inventory to external mode, verify the complete etcd cluster
 ETCDCTL_API=3 etcdctl \
   --endpoints=https://192.168.10.21:2379,https://192.168.10.22:2379,https://192.168.10.23:2379 \
   --cacert=/etc/etcd/pki/ca.pem \
-  --cert=/etc/etcd/pki/etcd.pem \
-  --key=/etc/etcd/pki/etcd-key.pem \
+  --cert=/etc/etcd/pki/cluster.pem \
+  --key=/etc/etcd/pki/cluster.key \
   endpoint status --cluster -w table
 ```
 
-The helper playbooks do not automatically copy the kube-apiserver etcd client credentials to `master1`. Before running the Kubernetes cluster initialization, place these files on `master1`:
-
-```text
-/etc/kubernetes/pki/etcd/ca.crt
-/etc/kubernetes/pki/apiserver-etcd-client.crt
-/etc/kubernetes/pki/apiserver-etcd-client.key
-```
+The cluster initialization playbook verifies these files before running
+kubeadm. `kubeadm init --upload-certs` then uploads the external-etcd
+credentials referenced by `ClusterConfiguration`; the generated control-plane
+join command downloads them onto the other master nodes. They do not need a
+second manual Ansible distribution step.
 
 Then update the inventory:
 

@@ -25,6 +25,27 @@
       - nf_conntrack
 
   tasks:
+    - name: check cloud-init configuration
+      ansible.builtin.stat:
+        path: /etc/cloud/cloud.cfg
+      register: cloud_init_config
+
+    - name: prevent cloud-init from restoring the old hostname
+      ansible.builtin.lineinfile:
+        path: /etc/cloud/cloud.cfg
+        regexp: '^preserve_hostname:'
+        line: 'preserve_hostname: true'
+      when: cloud_init_config.stat.exists
+
+    - name: set hostname from inventory before cluster initialization
+      ansible.builtin.hostname:
+        name: "{{ inventory_hostname }}"
+      register: hostname_change
+
+    - name: refresh gathered facts after hostname change
+      ansible.builtin.setup:
+      when: hostname_change.changed
+
     - name: system pre check
       ansible.builtin.assert:
         that:
@@ -70,16 +91,13 @@
         replace: '\1# \2'
         backup: true
 
-    - name: modify node name same as ansible hosts
-      shell: hostnamectl hostname {{ inventory_hostname }}
-
     - name: Ensure all inventory hosts are present in /etc/hosts
       blockinfile:
         path: /etc/hosts
         marker: "# {mark} ANSIBLE MANAGED HOSTS"
         block: |
           {% for host in groups['all'] %}
-          {{ hostvars[host]['ansible_host'] | default(hostvars[host]['ansible_ssh_host'] | default(hostvars[host]['inventory_hostname'])) }} {{ hostvars[host]['ansible_hostname'] | default(host) }} {{ host }}
+          {{ hostvars[host]['ansible_host'] | default(hostvars[host]['ansible_ssh_host'] | default(host)) }} {{ host }}
           {% endfor %}
 
     - name: update apt caching

@@ -1,9 +1,10 @@
 {
-  "CN": "{{ item }}",
+  "CN": "k8s-etcd-cluster",
   "hosts": [
     "127.0.0.1",
-    "localhost",
-    "{{ hostvars[item].ansible_ssh_host }}"
+    "localhost"{% for host in groups['etcd'] %},
+    "{{ host }}",
+    "{{ hostvars[host].ansible_host | default(hostvars[host].ansible_ssh_host) }}"{% endfor %}
   ],
   "key": { "algo": "rsa", "size": 2048 },
   "names": [
