@@ -38,6 +38,9 @@
       delegate_to: localhost
       run_once: true
       become: false
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
 
     - name: download cfssljson tools
       get_url:
@@ -47,6 +50,9 @@
       delegate_to: localhost
       run_once: true
       become: false
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
 
     - name: prepare ca-config file
       template:

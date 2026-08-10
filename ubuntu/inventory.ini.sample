@@ -1,29 +1,32 @@
 [master]
-master1 ansible_ssh_host=<CONTROL_PLANE_IP_1> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
-master2 ansible_ssh_host=<CONTROL_PLANE_IP_2> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
-master3 ansible_ssh_host=<CONTROL_PLANE_IP_3> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+master1 ansible_ssh_host=192.168.10.101 ansible_host=192.168.10.101
+master2 ansible_ssh_host=192.168.10.102 ansible_host=192.168.10.102
+master3 ansible_ssh_host=192.168.10.103 ansible_host=192.168.10.103
 
 
 [worker]
-worker1 ansible_ssh_host=<WORKER_IP_1> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
-worker2 ansible_ssh_host=<WORKER_IP_2> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
-worker3 ansible_ssh_host=<WORKER_IP_3> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+worker1 ansible_ssh_host=192.168.10.111 ansible_host=192.168.10.111
+worker2 ansible_ssh_host=192.168.10.112 ansible_host=192.168.10.112
+#worker3 ansible_ssh_host=192.168.10.113 ansible_host=192.168.10.113
 
 [etcd]
-etcd1 ansible_ssh_host=<ETCD_IP_1> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
-etcd2 ansible_ssh_host=<ETCD_IP_2> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
-etcd3 ansible_ssh_host=<ETCD_IP_3> ansible_ssh_user=<SSH_USER> ansible_ssh_pass=<SSH_PASSWORD>
+etcd1 ansible_ssh_host=192.168.10.201 ansible_host=192.168.10.201
+etcd2 ansible_ssh_host=192.168.10.202 ansible_host=192.168.10.202
+etcd3 ansible_ssh_host=192.168.10.203 ansible_host=192.168.10.203
 
 [k8s:children]
 master
 worker
 
 [k8s:vars]
-etcd_mode=internal
-kube_vip_address=<KUBE_VIP>
+etcd_mode=external
+kube_vip_address=192.168.10.187
 kube_vip_port=6443
-kube_vip_interface=<NETWORK_INTERFACE>
-kube_pod_cidr=<POD_CIDR>
+kube_vip_interface=eth0
+kube_pod_cidr=10.244.0.0/16
+ansible_user=root
+ansible_password='Sq5364250-sabuR'
+ansible_ssh_extra_args='-o StrictHostKeyChecking=no'
 
 [etcd:vars]
 # This directory is on the Ansible controller (CentOS or Ubuntu are both supported).
@@ -31,3 +34,7 @@ etcd_cert_work_dir=/tmp/k8s-etcd-certs
 etcd_cert_file=/etc/etcd/pki/cluster.pem
 etcd_key_file=/etc/etcd/pki/cluster.key
 etcd_trusted_ca_file=/etc/etcd/pki/ca.pem
+ansible_user=root
+ansible_password='Sq5364250-sabuR'
+ansible_ssh_extra_args='-o StrictHostKeyChecking=no'
+ansible_python_interpreter=/usr/bin/python3

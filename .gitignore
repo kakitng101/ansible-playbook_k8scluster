@@ -1,0 +1,7 @@
+inventory.ini.sample
+.DS_Store
+*.pem
+*.key
+*.crt
+*.csr
+*.srl

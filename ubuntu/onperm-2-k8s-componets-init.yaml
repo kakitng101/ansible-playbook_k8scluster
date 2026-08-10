@@ -7,6 +7,9 @@
       get_url:
         url: https://github.com/containerd/containerd/releases/download/v2.3.3/containerd-2.3.3-linux-amd64.tar.gz
         dest: /tmp/containerd.tar.gz
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
     
     - name: install containerd binary
       unarchive:
@@ -46,11 +49,17 @@
         mode: 0755
         owner: root
         group: root
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
 
     - name: get CNI plugins
       get_url:
         url: https://github.com/containernetworking/plugins/releases/download/v1.9.1/cni-plugins-linux-amd64-v1.9.1.tgz
         dest: /tmp/cni-plugins.tgz
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
 
     - name: create CNI folder
       file:
@@ -75,6 +84,9 @@
       get_url: 
         url: https://github.com/containerd/nerdctl/releases/download/v2.3.5/nerdctl-2.3.5-linux-amd64.tar.gz
         dest: /tmp/nerdctl.tar.gz
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
 
     - name: unarchive nerdctl binary
       unarchive:
@@ -94,6 +106,9 @@
         url: "https://pkgs.k8s.io/core:/stable:/v{{ version | default('1.36') }}/deb/Release.key"
         dest: /etc/apt/keyrings/kubernetes.asc
         mode: "0644"
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
 
     - name: configure Kubernetes repository
       apt_repository:
@@ -110,6 +125,9 @@
         url: https://get.helm.sh/helm-v4.2.3-linux-amd64.tar.gz
         dest: /tmp/helm.tar.gz
         mode: 0644
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
     - name: unarchive
       unarchive:
         src: /tmp/helm.tar.gz
@@ -126,6 +144,9 @@
           - kubectl
         state: present
         update_cache: true
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
     - name: hold kubernetes cli packages
       dpkg_selections:
         name: "{{ item }}"
@@ -145,6 +166,9 @@
           - kubeadm
         state: present
         update_cache: true
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
     - name: hold worker kubernetes packages
       dpkg_selections:
         name: "{{ item }}"

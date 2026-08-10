@@ -18,6 +18,9 @@
         url: https://github.com/etcd-io/etcd/releases/download/v3.7.1/etcd-v3.7.1-linux-amd64.tar.gz
         dest: /tmp/etcd.tar.gz
         mode: 0644
+      environment:
+        http_proxy: "http://192.168.10.8:7890"
+        https_proxy: "http://192.168.10.8:7890"
     - name: untar etcd file
       unarchive:
         src: /tmp/etcd.tar.gz
@@ -84,29 +87,46 @@
         daemon_reload: true
         state: restarted
 
-- name: sync external etcd credentials to first Kubernetes master
-  hosts: "{{ groups['master'] | first }}"
+- name: Distribute external etcd credentials to all Kubernetes masters
+  hosts: master
   become: true
   gather_facts: false
   vars:
-    cert_work_dir: "{{ hostvars[groups['etcd'] | first].etcd_cert_work_dir | default('/tmp/k8s-etcd-certs') }}"
+    cert_work_dir: "{{ etcd_cert_work_dir | default('/tmp/k8s-etcd-certs') }}"
+
+  tags:
+    - re-sync
+
   tasks:
-    - name: create Kubernetes external etcd PKI directory
-      file:
+    - name: Create Kubernetes external etcd PKI directory
+      ansible.builtin.file:
         path: /etc/kubernetes/pki/etcd
         state: directory
         owner: root
         group: root
         mode: "0700"
 
-    - name: sync external etcd credentials to first master
-      copy:
-        src: "{{ cert_work_dir }}/{{ item }}"
-        dest: "/etc/kubernetes/pki/etcd/{{ item }}"
+    - name: Distribute external etcd CA certificate
+      ansible.builtin.copy:
+        src: "{{ cert_work_dir }}/ca.pem"
+        dest: /etc/kubernetes/pki/apiserver-etcd-client-ca.crt
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Distribute external etcd client certificate
+      ansible.builtin.copy:
+        src: "{{ cert_work_dir }}/cluster.pem"
+        dest: /etc/kubernetes/pki/apiserver-etcd-client.crt
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Distribute external etcd client key
+      ansible.builtin.copy:
+        src: "{{ cert_work_dir }}/cluster.key"
+        dest: /etc/kubernetes/pki/apiserver-etcd-client.key
         owner: root
         group: root
         mode: "0600"
-      loop:
-        - ca.pem
-        - cluster.pem
-        - cluster.key
+      no_log: true

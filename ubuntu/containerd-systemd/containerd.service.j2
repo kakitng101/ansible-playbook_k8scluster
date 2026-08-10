@@ -20,6 +20,9 @@ After=network.target dbus.service
 [Service]
 ExecStartPre=-/sbin/modprobe overlay
 ExecStart=/usr/local/bin/containerd
+Environment="HTTP_PROXY=http://192.168.10.8:7890"
+Environment="HTTPS_PROXY=http://192.168.10.8:7890"
+Environment="NO_PROXY=localhost,127.0.0.1,192.168.10.0/24,10.244.0.0/16,.cluster.local"
 
 Type=notify
 Delegate=yes
