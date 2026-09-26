@@ -6,6 +6,12 @@
   vars:
     kubeconfig_path: /etc/kubernetes/admin.conf
     calico_version: v3.32.1
+    expected_node_count: >-
+      {{
+        (groups['master'] | default([]))
+        | union(groups['worker'] | default([]))
+        | length
+      }}
 
   tasks:
     - name: Check the Kubernetes administrator kubeconfig
@@ -135,7 +141,7 @@
       register: calico_node_readiness
       changed_when: false
       failed_when: >-
-        calico_node_readiness.stdout_lines | length != 6 or
+        calico_node_readiness.stdout_lines | length != expected_node_count | int or
         calico_node_readiness.stdout_lines |
         reject('search', '=True$') | list | length > 0
 

@@ -32,15 +32,6 @@ Environment=ETCD_PEER_KEY_FILE={{ etcd_key_file }}
 Environment=ETCD_PEER_CLIENT_CERT_AUTH=true
 Environment=ETCD_PEER_TRUSTED_CA_FILE={{ etcd_trusted_ca_file }}
 
-ETCD_HEARTBEAT_INTERVAL="300"
-ETCD_ELECTION_TIMEOUT="1500"# 2. 提高后端批处理合并间隔与上限，减少 HDD 频繁 4K 刷盘
-ETCD_BACKEND_BATCH_INTERVAL="250ms"
-ETCD_BACKEND_BATCH_LIMIT="10000"# 3. 降低自动 Compaction 频率，改为每 2 小时按时间周期压缩，减少磁盘随机 IO
-ETCD_AUTO_COMPACTION_RETENTION="2h"
-ETCD_AUTO_COMPACTION_MODE="periodic"# 4. 快照触发阈值 (保持 10 万条 WAL 日志触发一次，避免频繁快照刷盘)
-ETCD_SNAPSHOT_COUNT="100000"# 5. 存储配额 (根据需求设置为 2G 或 8G，此处为 2GB)
-ETCD_QUOTA_BACKEND_BYTES="4294967296"
-
 ExecStart=/usr/bin/etcd
 Restart=always
 RestartSec=10s

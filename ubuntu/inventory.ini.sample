@@ -1,40 +1,19 @@
 [master]
-master1 ansible_ssh_host=192.168.10.101 ansible_host=192.168.10.101
-master2 ansible_ssh_host=192.168.10.102 ansible_host=192.168.10.102
-master3 ansible_ssh_host=192.168.10.103 ansible_host=192.168.10.103
-
+master1 ansible_ssh_host=192.168.51.68
+master2 ansible_ssh_host=192.168.51.166
+master3 ansible_ssh_host=192.168.51.191
 
 [worker]
-worker1 ansible_ssh_host=192.168.10.111 ansible_host=192.168.10.111
-worker2 ansible_ssh_host=192.168.10.112 ansible_host=192.168.10.112
-#worker3 ansible_ssh_host=192.168.10.113 ansible_host=192.168.10.113
-
-[etcd]
-etcd1 ansible_ssh_host=192.168.10.201 ansible_host=192.168.10.201
-etcd2 ansible_ssh_host=192.168.10.202 ansible_host=192.168.10.202
-etcd3 ansible_ssh_host=192.168.10.203 ansible_host=192.168.10.203
+worker1 ansible_ssh_host=192.168.51.90
 
 [k8s:children]
 master
 worker
 
 [k8s:vars]
-etcd_mode=external
-kube_vip_address=192.168.10.187
-kube_vip_port=6443
-kube_vip_interface=eth0
+etcd_mode=internal
+kube_vip_address=192.168.51.100
+kube_vip_interface=enp6s0
 kube_pod_cidr=10.244.0.0/16
-ansible_user=root
-ansible_password='Sq5364250-sabuR'
-ansible_ssh_extra_args='-o StrictHostKeyChecking=no'
-
-[etcd:vars]
-# This directory is on the Ansible controller (CentOS or Ubuntu are both supported).
-etcd_cert_work_dir=/tmp/k8s-etcd-certs
-etcd_cert_file=/etc/etcd/pki/cluster.pem
-etcd_key_file=/etc/etcd/pki/cluster.key
-etcd_trusted_ca_file=/etc/etcd/pki/ca.pem
-ansible_user=root
-ansible_password='Sq5364250-sabuR'
-ansible_ssh_extra_args='-o StrictHostKeyChecking=no'
-ansible_python_interpreter=/usr/bin/python3
+ansible_ssh_user=k8s
+ansible_ssh_pass=k8ssecret

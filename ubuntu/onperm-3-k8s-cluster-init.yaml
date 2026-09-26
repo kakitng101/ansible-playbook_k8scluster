@@ -1,136 +1,29 @@
-- name: Distribute external etcd credentials to all Kubernetes masters
-  hosts: master
+- name: init k8s cluster config file
+  hosts: "{{ groups['master'] | first }}"
   become: true
   gather_facts: false
-
   tags:
     - k8s_init
     - control_plane_join
-    - master_join
-    - re-sync
-
+    - worker_join
   vars:
-    current_etcd_mode: "{{ etcd_mode | default('internal') }}"
-    cert_work_dir: "{{ etcd_cert_work_dir | default('/tmp/k8s-etcd-certs') }}"
-
-  tasks:
-    - name: Create Kubernetes PKI directory
-      ansible.builtin.file:
-        path: /etc/kubernetes/pki
-        state: directory
-        owner: root
-        group: root
-        mode: "0755"
-      when: current_etcd_mode == 'external'
-
-    - name: Distribute external etcd CA certificate
-      ansible.builtin.copy:
-        src: "{{ cert_work_dir }}/ca.pem"
-        dest: /etc/kubernetes/pki/apiserver-etcd-client-ca.crt
-        owner: root
-        group: root
-        mode: "0644"
-      when: current_etcd_mode == 'external'
-
-    - name: Distribute external etcd client certificate
-      ansible.builtin.copy:
-        src: "{{ cert_work_dir }}/cluster.pem"
-        dest: /etc/kubernetes/pki/apiserver-etcd-client.crt
-        owner: root
-        group: root
-        mode: "0644"
-      when: current_etcd_mode == 'external'
-
-    - name: Distribute external etcd client key
-      ansible.builtin.copy:
-        src: "{{ cert_work_dir }}/cluster.key"
-        dest: /etc/kubernetes/pki/apiserver-etcd-client.key
-        owner: root
-        group: root
-        mode: "0600"
-      no_log: true
-      when: current_etcd_mode == 'external'
-
-- name: Initialize Kubernetes cluster
-  hosts: master
-  become: true
-  gather_facts: false
-
-  tags:
-    - k8s_init
-    - control_plane_join
-    - master_join
-
-  vars:
-    current_etcd_mode: "{{ etcd_mode | default('internal') }}"
-    vip_address: "{{ kube_vip_address | default('192.168.10.187') }}"
+    vip_address: "{{ kube_vip_address | default('192.168.10.10') }}"
     vip_port: "{{ kube_vip_port | default(6443) }}"
+    vip_interface: "{{ kube_vip_interface | default('eth0') }}"
     pod_cidr: "{{ kube_pod_cidr | default('10.244.0.0/16') }}"
-
-    external_etcd_ca_file: /etc/kubernetes/pki/apiserver-etcd-client-ca.crt
-    external_etcd_cert_file: /etc/kubernetes/pki/apiserver-etcd-client.crt
-    external_etcd_key_file: /etc/kubernetes/pki/apiserver-etcd-client.key
-
+  pre_tasks:
+    - name: validate etcd mode
+      assert:
+        that:
+          - (etcd_mode | default('internal')) in ['internal', 'external']
+        fail_msg: "etcd_mode must be either 'internal' or 'external'"
   tasks:
-    # 1. 动态获取实际安装的 kubeadm 版本信息
-    - name: Get installed kubeadm version
-      ansible.builtin.command: kubeadm version -o json
-      register: kubeadm_version_raw
-      changed_when: false
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 2. 动态提取版本号与对应的 API 规范版本（支持新老版本无缝切换）
-    - name: Set dynamic Kubernetes version facts
-      ansible.builtin.set_fact:
-        detected_k8s_version: "{{ (kubeadm_version_raw.stdout | from_json).clientVersion.gitVersion }}"
-        detected_api_version: >-
-          {{
-            'kubeadm.k8s.io/v1beta4'
-            if ((kubeadm_version_raw.stdout | from_json).clientVersion.minor | int) >= 31
-            else 'kubeadm.k8s.io/v1beta3'
-          }}
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 3. 动态导出原生 kubeadm 默认配置模板
-    - name: Generate kubeadm init default configuration
-      ansible.builtin.shell: >-
-        kubeadm config print init-defaults
-        --component-configs KubeletConfiguration
-        > /tmp/cluster.yaml
+    - name: create k8s cluster initial config
+      shell: kubeadm config print init-defaults --component-configs KubeletConfiguration > /tmp/cluster.yaml
       args:
         executable: /bin/bash
-      changed_when: true
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 4. 动态更新配置文件中的 apiVersion (适配 v1beta3 / v1beta4)
-    - name: Dynamically update API version in cluster.yaml
-      ansible.builtin.replace:
-        path: /tmp/cluster.yaml
-        regexp: 'apiVersion: kubeadm\.k8s\.io/v1beta[34]'
-        replace: "apiVersion: {{ detected_api_version }}"
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 5. 动态更新 kubernetesVersion 为当前节点实际版本
-    - name: Dynamically update kubernetesVersion in cluster.yaml
-      ansible.builtin.replace:
-        path: /tmp/cluster.yaml
-        regexp: 'kubernetesVersion: ".*"'
-        replace: 'kubernetesVersion: "{{ detected_k8s_version }}"'
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 6. 配置外部 etcd（当 etcd 模式为 external 时）
-    - name: Configure external etcd dynamically
-      ansible.builtin.replace:
+    - name: replace cluster etcd config
+      replace:
         path: /tmp/cluster.yaml
         regexp: 'etcd:\n\s+local:\n\s+dataDir: /var/lib/etcd'
         replace: |-
@@ -138,172 +31,419 @@
             external:
               endpoints:
           {% for host in groups.get('etcd', []) %}
-                - "https://{{ hostvars[host].ansible_host | default(host) }}:2379"
+                - https://{{ hostvars[host]['ansible_ssh_host'] }}:2379
           {% endfor %}
-              caFile: "{{ external_etcd_ca_file }}"
-              certFile: "{{ external_etcd_cert_file }}"
-              keyFile: "{{ external_etcd_key_file }}"
-      when:
-        - current_etcd_mode == 'external'
-        - inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 7. 配置 API server 绑定的监听地址
-    - name: Configure API server advertise address dynamically
-      ansible.builtin.replace:
+              caFile: /etc/kubernetes/pki/etcd/ca.crt
+              certFile: /etc/kubernetes/pki/apiserver-etcd-client.crt
+              keyFile: /etc/kubernetes/pki/apiserver-etcd-client.key
+      when: (etcd_mode | default('internal')) == 'external'
+    - name: modify advertise address config
+      replace:
         path: /tmp/cluster.yaml
-        regexp: '^(\s*)advertiseAddress:\s*.*$'
-        replace: '\1advertiseAddress: {{ hostvars[inventory_hostname].ansible_host | default(ansible_ssh_host | default(inventory_hostname)) }}'
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 8. 配置初始 control-plane 节点名称
-    - name: Configure initial control-plane node name dynamically
-      ansible.builtin.replace:
+        regexp: "advertiseAddress: 1.2.3.4"
+        replace: "advertiseAddress: {{ ansible_ssh_host }}"
+    - name: modify cluster name config
+      replace:
         path: /tmp/cluster.yaml
-        regexp: 'name: node'
+        regexp: "name: node"
         replace: "name: {{ inventory_hostname }}"
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 9. 注入高可用 VIP 访问端点
-    - name: Configure highly available API server endpoint
-      ansible.builtin.lineinfile:
+    - name: modify ca expire time configg
+      replace:
         path: /tmp/cluster.yaml
-        insertafter: '^clusterName:'
+        regexp: '8760h0m0'
+        replace: '87600h0m0'
+    - name: insert ha apiserver config
+      lineinfile:
+        dest: /tmp/cluster.yaml
+        insertafter: clusterName.*$
         line: "controlPlaneEndpoint: {{ vip_address }}:{{ vip_port }}"
-        state: present
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 10. 注入 Pod 网络网段
-    - name: Configure pod CIDR
-      ansible.builtin.lineinfile:
-        path: /tmp/cluster.yaml
-        insertafter: '^  serviceSubnet:'
+    - name: modify pod cidr config
+      lineinfile:
+        dest: /tmp/cluster.yaml
+        insertafter: serviceSubnet.*$
         line: "  podSubnet: {{ pod_cidr }}"
-        state: present
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    # 11. 执行集群初始化
-    - name: Initialize first control-plane node
-      ansible.builtin.shell: kubeadm init --config=/tmp/cluster.yaml --upload-certs --skip-phases=addon/kube-proxy
-      args:
-        executable: /bin/bash
-        creates: /etc/kubernetes/admin.conf
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
-
-    - name: Create .kube directory for root
-      ansible.builtin.file:
-        path: /root/.kube
+    - name: create k8s manifest folder
+      file:
+        path: /etc/kubernetes/manifests
         state: directory
+        mode: "0755"
         owner: root
         group: root
-        mode: "0755"
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
 
-    - name: Copy admin.conf to root kubeconfig
-      ansible.builtin.copy:
+    - name: check kubernetes already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: kubernetes_initialized
+
+    - name: start kubeadm init asynchronously
+      shell: >-
+        kubeadm init
+        --config=/tmp/cluster.yaml
+        --upload-certs
+        --skip-phases=addon/kube-proxy
+      args:
+        executable: /bin/bash
+      async: 900
+      poll: 0
+      register: kubeadm_async
+      when: not kubernetes_initialized.stat.exists
+
+    - name: wait for super-admin.conf
+      stat:
+        path: /etc/kubernetes/super-admin.conf
+      register: super_admin_file
+      retries: 90
+      delay: 2
+      until: super_admin_file.stat.exists
+      when: not kubernetes_initialized.stat.exists
+
+    - name: create kubevip bootstrap kubeconfig
+      copy:
+        src: /etc/kubernetes/super-admin.conf
+        dest: /etc/kubernetes/kube-vip-bootstrap.conf
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      when: not kubernetes_initialized.stat.exists
+
+    - name: configure kubevip bootstrap api endpoint
+      replace:
+        path: /etc/kubernetes/kube-vip-bootstrap.conf
+        regexp: 'server:\s+https://\S+'
+        replace: 'server: https://{{ ansible_ssh_host }}:6443'
+      when: not kubernetes_initialized.stat.exists
+
+    - name: verify kubevip bootstrap api endpoint
+      command:
+        cmd: grep 'server:' /etc/kubernetes/kube-vip-bootstrap.conf
+      register: kubevip_bootstrap_server
+      changed_when: false
+      failed_when: >
+        ('https://' ~ ansible_ssh_host ~ ':6443')
+        not in kubevip_bootstrap_server.stdout
+      when: not kubernetes_initialized.stat.exists
+
+    - name: wait for local kube apiserver
+      wait_for:
+        host: "{{ ansible_ssh_host }}"
+        port: 6443
+        timeout: 180
+      when: not kubernetes_initialized.stat.exists
+
+    - name: create bootstrap kubevip static pod
+      shell: |
+        nerdctl run --rm --net host \
+          ghcr.io/kube-vip/kube-vip:v1.2.2 \
+          manifest pod \
+          --interface {{ vip_interface }} \
+          --address {{ vip_address }} \
+          --controlplane \
+          --services \
+          --arp \
+          --leaderElection \
+          > /etc/kubernetes/kube-vip-staged.yaml
+      args:
+        executable: /bin/bash
+      when: not kubernetes_initialized.stat.exists
+
+    - name: switch kubevip hostPath to bootstrap kubeconfig
+      replace:
+        path: /etc/kubernetes/kube-vip-staged.yaml
+        regexp: 'path: /etc/kubernetes/admin\.conf'
+        replace: 'path: /etc/kubernetes/kube-vip-bootstrap.conf'
+      when: not kubernetes_initialized.stat.exists
+
+    - name: verify kubevip manifest hostPath
+      shell: |
+        grep -A2 'hostPath:' /etc/kubernetes/kube-vip-staged.yaml \
+          | grep -F 'path: /etc/kubernetes/kube-vip-bootstrap.conf'
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: not kubernetes_initialized.stat.exists
+
+    - name: verify kubevip mountPath remains admin.conf
+      shell: |
+        grep -A2 'mountPath:' /etc/kubernetes/kube-vip-staged.yaml \
+          | grep -F 'mountPath: /etc/kubernetes/admin.conf'
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: not kubernetes_initialized.stat.exists
+
+    - name: publish kubevip manifest atomically
+      copy:
+        src: /etc/kubernetes/kube-vip-staged.yaml
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: not kubernetes_initialized.stat.exists
+
+    - name: wait for kubevip VIP address
+      shell: >
+        ip -4 addr show dev {{ vip_interface }}
+        | grep -q '{{ vip_address }}/32'
+      register: kubevip_status
+      retries: 60
+      delay: 2
+      until: kubevip_status.rc == 0
+      changed_when: false
+      when: not kubernetes_initialized.stat.exists
+
+    - name: wait for kubeadm init to finish
+      async_status:
+        jid: "{{ kubeadm_async.ansible_job_id }}"
+      register: kubeadm_result
+      until: kubeadm_result.finished
+      retries: 180
+      delay: 5
+      when:
+        - not kubernetes_initialized.stat.exists
+        - kubeadm_async is defined
+        - kubeadm_async.ansible_job_id is defined
+
+    - name: print k8s initial status
+      debug:
+        msg: >-
+          {{
+            kubeadm_result.stdout_lines
+            | default(['kubeadm init already completed'])
+          }}
+
+    - name: read local admin kubeconfig
+      slurp:
+        src: /etc/kubernetes/admin.conf
+      register: kubevip_admin_config
+      no_log: true
+
+    - name: write dedicated local kubevip config
+      copy:
+        content: >-
+          {{ (kubevip_admin_config.content | b64decode)
+             | regex_replace('server:\s+https://\S+',
+               'server: https://' ~ ansible_ssh_host ~ ':6443') }}
+        dest: /etc/kubernetes/kube-vip.conf
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: verify local API readiness with normal credentials
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/kube-vip.conf
+        --request-timeout=5s get --raw=/readyz
+      register: kubevip_local_ready
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: kubevip_local_ready.rc == 0 and kubevip_local_ready.stdout == 'ok'
+
+    - name: verify normal credentials can acquire leases
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/kube-vip.conf
+        --request-timeout=5s auth can-i {{ item }} leases.coordination.k8s.io
+        --namespace=kube-system
+      loop: [get, create, update]
+      register: kubevip_auth
+      changed_when: false
+      failed_when: kubevip_auth.rc != 0 or kubevip_auth.stdout != 'yes'
+
+    - name: create normal kubevip static pod
+      shell: |
+        nerdctl run --rm --net host \
+          ghcr.io/kube-vip/kube-vip:v1.2.2 \
+          manifest pod \
+          --interface {{ vip_interface }} \
+          --address {{ vip_address }} \
+          --controlplane \
+          --services \
+          --arp \
+          --leaderElection \
+          > /etc/kubernetes/kube-vip-staged.yaml
+      args:
+        executable: /bin/bash
+
+    - name: configure normal manifest hostPath
+      replace:
+        path: /etc/kubernetes/kube-vip-staged.yaml
+        regexp: 'path: /etc/kubernetes/admin\.conf'
+        replace: 'path: /etc/kubernetes/kube-vip.conf'
+
+    - name: verify normal kubevip uses dedicated config
+      shell: |
+        grep -A2 'hostPath:' /etc/kubernetes/kube-vip-staged.yaml \
+          | grep -F 'path: /etc/kubernetes/kube-vip.conf'
+      args:
+        executable: /bin/bash
+      changed_when: false
+
+    - name: publish kubevip manifest atomically
+      copy:
+        src: /etc/kubernetes/kube-vip-staged.yaml
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: verify VIP API regardless of elected leader node
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf
+        --request-timeout=5s get --raw=/readyz
+      register: kubevip_vip_ready
+      retries: 60
+      delay: 2
+      until: kubevip_vip_ready.rc == 0 and kubevip_vip_ready.stdout == 'ok'
+      changed_when: false
+
+    # Retain root-only bootstrap config until the old container has stopped.
+    # File existence alone is not proof that kubeadm init completed successfully.
+    - name: verify kubeadm cluster configuration exists
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/kube-vip.conf
+        --request-timeout=5s -n kube-system get configmap kubeadm-config
+      changed_when: false
+
+    - name: fetch kubevip file to ansible host
+      fetch:
+        src: /etc/kubernetes/manifests/kube-vip.yaml
+        dest: /tmp/kube-vip.yaml
+        flat: true
+    - name: create root kubeconfig directory
+      file:
+        path: /root/.kube
+        state: directory
+        mode: "0700"
+    - name: configure root kubeconfig for helm and kubectl
+      copy:
         src: /etc/kubernetes/admin.conf
         dest: /root/.kube/config
         remote_src: true
         owner: root
         group: root
         mode: "0600"
-      when: inventory_hostname == (groups['master'] | first)
-      tags:
-        - k8s_init
+    - name: generate control plane join token
+      shell: kubeadm token create --print-join-command --certificate-key $(kubeadm init phase upload-certs --upload-certs | tail -1)
+      args:
+        executable: /bin/bash
+      register: control_plane_join_output
+    - name: generate worker node join token
+      shell: kubeadm token create --print-join-command
+      args:
+        executable: /bin/bash
+      register: node_join_output
 
-    - name: Generate external etcd control-plane join command
-      ansible.builtin.shell: >-
-        kubeadm token create --print-join-command
-        --certificate-key $(kubeadm init phase upload-certs --upload-certs --config=/tmp/cluster.yaml| tail -n 1)
-      register: external_control_plane_join_output
-      changed_when: true
-      delegate_to: "{{ groups['master'] | first }}"
-      run_once: true
-      tags:
-        - control_plane_join
-        - master_join
-
-    - name: Generate worker join command
-      ansible.builtin.command:
-        argv:
-          - kubeadm
-          - token
-          - create
-          - --print-join-command
-      register: worker_join_output
-      changed_when: true
-      no_log: true
-      delegate_to: "{{ groups['master'] | first }}"
-      run_once: true
-      tags:
-        - worker_join
-
-- name: Join secondary control-plane nodes
+- name: other master node join into cluster
   hosts: "{{ groups['master'][1:] }}"
   become: true
-  gather_facts: false
   serial: 1
-
   tags:
     - control_plane_join
-    - master_join
-
-  vars:
-    current_etcd_mode: "{{ etcd_mode | default('internal') }}"
-    bootstrap_master: "{{ groups['master'] | first }}"
-
-  tasks:
-    - name: Clean up legacy K8s PKI on secondary masters (keep external etcd certs)
-      ansible.builtin.shell: |
-        find /etc/kubernetes/pki -type f ! -name "apiserver-etcd-client*" -exec rm -f {} +
-      args:
-        executable: /bin/bash
-      when: current_etcd_mode == 'external'
-
-    - name: Join control-plane node using external etcd
-      ansible.builtin.shell: >-
-        {{
-          hostvars[bootstrap_master]
-          .external_control_plane_join_output.stdout
-        }}
+  tasks:    
+    - name: run join control plane command
       args:
         executable: /bin/bash
         creates: /etc/kubernetes/kubelet.conf
-      register: external_master_join_result
+      shell: >-
+        /bin/bash -c "{{ hostvars[groups['master'] | first]['control_plane_join_output']['stdout'] }}"
+      register: master_join_result
+    - name: print master join result
+      debug:
+        msg: "{{ master_join_result.stdout_lines | default(['control-plane already joined']) }}"
+    - name: read local admin kubeconfig
+      slurp:
+        src: /etc/kubernetes/admin.conf
+      register: kubevip_admin_config
+      no_log: true
 
-- name: Join worker nodes
-  hosts: "{{ groups['worker'] | default([]) }}"
+    - name: write dedicated local kubevip config
+      copy:
+        content: >-
+          {{ (kubevip_admin_config.content | b64decode)
+             | regex_replace('server:\s+https://\S+',
+               'server: https://' ~ ansible_ssh_host ~ ':6443') }}
+        dest: /etc/kubernetes/kube-vip.conf
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+
+    - name: verify local API readiness with normal credentials
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/kube-vip.conf
+        --request-timeout=5s get --raw=/readyz
+      register: kubevip_local_ready
+      changed_when: false
+      retries: 30
+      delay: 2
+      until: kubevip_local_ready.rc == 0 and kubevip_local_ready.stdout == 'ok'
+
+    - name: verify normal credentials can acquire leases
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/kube-vip.conf
+        --request-timeout=5s auth can-i {{ item }} leases.coordination.k8s.io
+        --namespace=kube-system
+      loop: [get, create, update]
+      register: kubevip_auth
+      changed_when: false
+      failed_when: kubevip_auth.rc != 0 or kubevip_auth.stdout != 'yes'
+
+    - name: distribute kubevip for static pods
+      copy:
+        src: /tmp/kube-vip.yaml
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        owner: root
+        group: root
+        mode: 0644    
+- name: worker node join into cluster
+  hosts: worker
   become: true
-  gather_facts: false
-
+  serial: 1
   tags:
     - worker_join
-
-  vars:
-    bootstrap_master: "{{ groups['master'] | first }}"
-
   tasks:
-    - name: Join worker node to the cluster
-      ansible.builtin.shell: >-
-        {{
-          hostvars[bootstrap_master]
-          .worker_join_output.stdout
-        }}
+    - name: run join worker node command
       args:
         executable: /bin/bash
         creates: /etc/kubernetes/kubelet.conf
-      register: worker_join_result
-      when: groups['worker'] is defined and inventory_hostname in groups['worker']
+      shell: >-
+        /bin/bash -c "{{ hostvars[groups['master'] | first]['node_join_output']['stdout'] }}"
+    - name: modify worker node role
+      shell: hostnamectl set-hostname {{ inventory_hostname }}
+
+- name: validate nodes registered before CNI installation
+  hosts: "{{ groups['master'] | first }}"
+  become: true
+  tags:
+    - validation
+  vars:
+    expected_node_count: >-
+      {{
+        (groups['master'] | default([]))
+        | union(groups['worker'] | default([]))
+        | length
+      }}
+    expected_control_plane_count: "{{ groups['master'] | length }}"
+  tasks:
+    - name: wait for all Kubernetes nodes to register
+      command: kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes -o name
+      register: registered_nodes
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: registered_nodes.stdout_lines | length == expected_node_count | int
+
+    - name: verify all control-plane nodes registered
+      command: >-
+        kubectl --kubeconfig=/etc/kubernetes/admin.conf get nodes
+        -l node-role.kubernetes.io/control-plane -o name
+      register: registered_control_planes
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: >-
+        registered_control_planes.stdout_lines | length
+        == expected_control_plane_count | int

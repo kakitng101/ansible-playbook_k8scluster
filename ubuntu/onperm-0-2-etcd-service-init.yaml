@@ -1,8 +1,6 @@
 - name: etcd register
   become: true
   hosts: etcd
-  vars:
-    cert_work_dir: "{{ etcd_cert_work_dir | default('/tmp/k8s-etcd-certs') }}"
   tasks:
     - name: create etcd directories
       file:
@@ -18,9 +16,6 @@
         url: https://github.com/etcd-io/etcd/releases/download/v3.7.1/etcd-v3.7.1-linux-amd64.tar.gz
         dest: /tmp/etcd.tar.gz
         mode: 0644
-      environment:
-        http_proxy: "http://192.168.10.8:7890"
-        https_proxy: "http://192.168.10.8:7890"
     - name: untar etcd file
       unarchive:
         src: /tmp/etcd.tar.gz
@@ -46,23 +41,18 @@
         mode: 0600
       notify:
         - reload etcd service
-    - name: sync cluster certificate and key to etcd server
+    - name: sync client certs to etcd server
       tags:
         - init
       copy:
-        src: "{{ cert_work_dir }}/{{ item.src }}"
-        dest: "/etc/etcd/pki/{{ item.dest }}"
-        owner: root
-        group: root
-        mode: "0600"
-      loop:
-        - { src: cluster.pem, dest: cluster.pem }
-        - { src: cluster.key, dest: cluster.key }
+        src: "/opt/certs/{{ inventory_hostname }}/"
+        dest: "/etc/etcd/pki/"
+        mode: 0600
     - name: sync ca certs to etcd server
       tags:
         - init
       copy:
-        src: "{{ cert_work_dir }}/ca.pem"
+        src: /opt/certs/ca.pem
         dest: /etc/etcd/pki/ca.pem
         mode: 0600
     - name: init etcd service
@@ -74,7 +64,7 @@
         state: restarted
     - name: check for etcd healthy
       command: >
-        etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/etcd/pki/ca.pem --cert=/etc/etcd/pki/cluster.pem --key=/etc/etcd/pki/cluster.key endpoint health
+        etcdctl --endpoints=https://127.0.0.1:2379 --cacert=/etc/etcd/pki/ca.pem --cert=/etc/etcd/pki/etcd.pem --key=/etc/etcd/pki/etcd-key.pem endpoint health
       register: etcd_healthy
       changed_when: false
     - name: show healthy status
@@ -86,47 +76,3 @@
         name: etcd
         daemon_reload: true
         state: restarted
-
-- name: Distribute external etcd credentials to all Kubernetes masters
-  hosts: master
-  become: true
-  gather_facts: false
-  vars:
-    cert_work_dir: "{{ etcd_cert_work_dir | default('/tmp/k8s-etcd-certs') }}"
-
-  tags:
-    - re-sync
-
-  tasks:
-    - name: Create Kubernetes external etcd PKI directory
-      ansible.builtin.file:
-        path: /etc/kubernetes/pki/etcd
-        state: directory
-        owner: root
-        group: root
-        mode: "0700"
-
-    - name: Distribute external etcd CA certificate
-      ansible.builtin.copy:
-        src: "{{ cert_work_dir }}/ca.pem"
-        dest: /etc/kubernetes/pki/apiserver-etcd-client-ca.crt
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Distribute external etcd client certificate
-      ansible.builtin.copy:
-        src: "{{ cert_work_dir }}/cluster.pem"
-        dest: /etc/kubernetes/pki/apiserver-etcd-client.crt
-        owner: root
-        group: root
-        mode: "0644"
-
-    - name: Distribute external etcd client key
-      ansible.builtin.copy:
-        src: "{{ cert_work_dir }}/cluster.key"
-        dest: /etc/kubernetes/pki/apiserver-etcd-client.key
-        owner: root
-        group: root
-        mode: "0600"
-      no_log: true
